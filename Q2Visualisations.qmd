@@ -1,0 +1,435 @@
+---
+title: "STAT3888 Visualisations and Tables for Question 2"
+author: "Calvin Lai"
+date: today
+format:
+  html:
+    theme: cosmo
+    code-fold: show
+    highlight-style: github
+    embed-resources: true
+---
+
+# To Do List
+
+**Tables.**
+
+- Population characteristics table for each variable
+  - Categorical format: number of observations (proportion)
+  - Numerical format: mean (range)
+- Three models; coefficient of `ExerciseGuidelines` (and interaction effects if applicable), and p-value. Models: -crude model (no confounders)
+  - full model
+  - full model + interaction with `SmokingDuration` and `AlcoholRisk`
+- Table of actual odds ratios and confidence intervals for `ExerciseGuidelines` for both `ALT3` and `GGT3` full models
+
+**Plots.**
+
+- `ExerciseGuidelines` ($x$-axis) against (possibly numeric) `ALT` and `GGT` ($y$-axis) respectively, or facet-wrapped barplot with significance levels and error bars of SEs
+- Interaction effect plots
+
+# Tables
+
+The tables here are not the final versions and I will make them using LaTeX `booktabs` instead on a separate LaTeX document.
+
+```{r warning = F, message = F}
+# Initial setup
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, 
+                      fig.align='center', fig.dim=c(10, 8))
+
+# Libraries
+library(tidyverse)
+library(here)
+library(knitr)
+library(kableExtra)
+library(nnet)
+library(stargazer)
+library(broom)
+library(ggpubr)
+library(emmeans)
+library(scales)
+
+# Data
+dat.full = readRDS(here("Objects", "dat_full.rds"))
+```
+
+We make first the population characteristics table, using `ALT3` and `GGT3` as the ALT and GGT variables. Then, we have:
+
+- Numerical variables: `Age` and `Waist.`
+- Categorical Variables: `AlcoholRisk`, `SmokingDuration`, `ExerciseGuidelines`, `Sex`, `NonShoolQuals`, `IncomeDecile`, `ALT3`, `GGT3.`
+
+## Tables 1: Variable Definitions
+
+| Variable | Meaning | Type / coding |
+|:--------------:|:----------------------------:|:------------------------:|
+| `ALT3` | Alanine aminotransferase (ALT) category | Ordered categorical factor: Low vs Borderline vs High |
+| `GGT3` | Gamma-glutamyl transferase (GGT) category | Ordered categorical factor: Low vs Borderline vs High |
+| `ExerciseGuidelines` | Whether recommended physical-activity guidelines were met | Binary factor: Yes / No |
+| `Age` | Age in years | Continuous numeric |
+| `Sex` | Sex | Binary factor: Female / Male |
+| `Waist` | Waist circumference in cm | Continuous numeric |
+| `AlcoholRisk` | Alcohol consumption risk level | Binary factor: Low risk / Medium–High risk |
+| `SmokingDuration` | Duration of smoking history | Ordered categorical factor, grouped by years smoked |
+| `NonSchoolQuals` | Whether a non-school educational qualification was completed | Binary factor: Yes / No |
+| `IncomeDecile` | Income decile | Ordered categorical factor, deciles 1–10 |
+
+## Tables 2: Population Characteristics Summary
+
+Again, note that this is not the final tables, and are just drafts for the final ones on LaTeX.
+
+```{r}
+# Numerical summaries: mean, and IQR
+age.summary = summary(dat.full$Age)[c(4, 2, 5)]
+waist.summary = summary(dat.full$Waist)[c(4, 2, 5)]
+num.summary = rbind(age.summary, waist.summary) %>% 
+  as.data.frame() %>% 
+  rename("Q1" = "1st Qu.", "Q3" = "3rd Qu.")
+rownames(num.summary) = c("Age", "Waist")
+num.summary %>% kable(caption = "Numerical Summary")
+
+# Categorical Summary: Variable | Class | Count | Proportion
+categoricals = c("AlcoholRisk", "SmokingDuration", "ExerciseGuidelines", "Sex",
+                 "NonSchoolQuals", "IncomeDecile", "ALT3", "GGT3")
+cat.summary = map_df(categoricals, function(var) {
+  dat.full %>%
+    group_by(Class = as.character(.data[[var]])) %>%
+    summarise(Count = n(), .groups = 'drop') %>%
+    mutate(Variable = var, Proportion = round(Count / sum(Count), 3) * 100) %>%
+    select(Variable, Class, Count, Proportion)
+})
+
+cat.summary %>% kable(caption = "Categorical Summary Table")
+```
+
+Maybe for the categorical one we can split them into the main variables (`ALT3`/`GGT3` and `ExerciseGuidelines` only), and in the appendix we have the proportions of everything else.
+
+```{r}
+# Main variables table
+main.cat = c("ExerciseGuidelines", "ALT3", "GGT3")
+cat.summary = map_df(main.cat, function(var) {
+  dat.full %>%
+    group_by(Class = as.character(.data[[var]])) %>%
+    summarise(Count = n(), .groups = 'drop') %>%
+    mutate(Variable = var, Proportion = round(Count / sum(Count), 3) * 100) %>%
+    select(Variable, Class, Count, Proportion)
+})
+
+cat.summary %>% kable(caption = "Main Categorical Summary Table")
+
+# Other variables table
+other.cat = c("AlcoholRisk", "SmokingDuration", "Sex", 
+              "NonSchoolQuals", "IncomeDecile")
+cat.summary = map_df(other.cat, function(var) {
+  dat.full %>%
+    group_by(Class = as.character(.data[[var]])) %>%
+    summarise(Count = n(), .groups = 'drop') %>%
+    mutate(Variable = var, Proportion = round(Count / sum(Count), 3) * 100) %>%
+    select(Variable, Class, Count, Proportion)
+})
+
+cat.summary %>% kable(caption = "Other Categorical Summary Table")
+```
+
+Then the other categorical variables will be made into a table with the numerical ones instead.
+
+## Tables 3: Models
+
+I think it is a bit difficult to combine the crude/main models with the interaction model, since we are comparing different things when we compare `ExerciseGuidelines`, so we split these into two tables. Additionally, I also present the table using odds ratios as well. This way, the first answers whether adjustment change the apparent exercise association; the second table (and maybe figures later on) could answer whether that association differ according to alcohol risk or smoking duration.
+
+```{r}
+# ALT Model fits
+ALT.crude = nnet::multinom(formula = ALT3 ~ ExerciseGuidelines,
+                           data = dat.full, Hess = TRUE)
+ALT.main = nnet::multinom(formula = ALT3 ~ ExerciseGuidelines + Sex + AlcoholRisk + 
+    SmokingDuration + NonSchoolQuals + IncomeDecile + Age + Waist,
+    data = dat.full, Hess = TRUE)
+ALT.int = nnet::multinom(formula = ALT3 ~ ExerciseGuidelines + AlcoholRisk + 
+    SmokingDuration + NonSchoolQuals + IncomeDecile + Sex + Age + Waist +
+      ExerciseGuidelines : AlcoholRisk + ExerciseGuidelines : SmokingDuration,
+    data = dat.full, Hess = TRUE)
+
+# GGT Model fits
+GGT.crude = nnet::multinom(formula = GGT3 ~ ExerciseGuidelines,
+                           data = dat.full, Hess = TRUE)
+GGT.main = nnet::multinom(formula = GGT3 ~ ExerciseGuidelines + Sex + AlcoholRisk + 
+    SmokingDuration + NonSchoolQuals + IncomeDecile + Age + Waist,
+    data = dat.full, Hess = TRUE)
+GGT.int = nnet::multinom(formula = GGT3 ~ ExerciseGuidelines + AlcoholRisk + 
+    SmokingDuration + NonSchoolQuals + IncomeDecile + Sex + Age + Waist +
+      ExerciseGuidelines : AlcoholRisk + ExerciseGuidelines : SmokingDuration,
+    data = dat.full, Hess = TRUE)
+```
+
+```{r}
+# Summary of just the ExerciseGuidelines coefficient + p-value
+extract_exercise = function(model, model_name) {
+  
+  tidy(model) %>% filter(grepl("^ExerciseGuidelines", term)) %>%
+    mutate(Model = model_name) %>%
+    select(Model, Outcome = y.level, term, estimate, std.error, p.value)
+  
+}
+ALT.exercise = bind_rows(extract_exercise(ALT.crude, "Crude"),
+                         extract_exercise(ALT.main,  "Adjusted"))
+
+GGT.exercise = bind_rows(extract_exercise(GGT.crude, "Crude"),
+                         extract_exercise(GGT.main,  "Adjusted"))
+
+# ALT Table
+ALT.exercise.table = ALT.exercise %>% 
+  mutate(estimate = round(estimate, 3),
+         p.value = case_when(p.value < 0.0001 ~ "<0.0001",
+                             TRUE ~ sprintf("%.4f", p.value))) %>%
+  select(Outcome, Model, estimate, p.value) %>%
+  pivot_wider(names_from = Model, values_from = c(estimate, p.value),
+              names_glue = "{Model}_{.value}")
+
+kable(ALT.exercise.table, caption = "Exercise Guidelines and ALT Category",
+      align = "c")
+
+# GGT Table
+GGT.exercise.table = GGT.exercise %>%
+  mutate(estimate = round(estimate, 3), 
+         p.value = case_when(p.value < 0.0001 ~ "<0.0001",
+                             TRUE ~ sprintf("%.4f", p.value))) %>%
+  select(Outcome, Model, estimate, p.value) %>%
+  pivot_wider(names_from = Model, values_from = c(estimate, p.value), 
+              names_glue = "{Model}_{.value}")
+
+kable(GGT.exercise.table, caption = "Exercise Guidelines and GGT Category",
+      align = "c")
+```
+
+```{r}
+# Summary using Odds Ratios
+extract_exercise_OR = function(model, model_name) {
+  
+  tidy(model, conf.int = TRUE, exponentiate = TRUE) %>%
+    filter(grepl("^ExerciseGuidelines", term)) %>%
+    mutate(Model = model_name) %>%
+    select(Model, Outcome = y.level, term, OR = estimate, conf.low, conf.high, 
+           p.value)
+  
+}
+
+# ALT
+ALT.exercise.OR = bind_rows(extract_exercise_OR(ALT.crude, "Crude"),
+                            extract_exercise_OR(ALT.main,  "Adjusted"))
+ALT.exercise.OR = ALT.exercise.OR %>%
+  mutate(`OR (95% CI)` = sprintf("%.2f (%.2f, %.2f)", OR, conf.low, conf.high),
+         `p-value` = ifelse(p.value < 0.0001, "<0.0001", sprintf("%.4f", p.value)))
+kable(ALT.exercise.OR, 
+      caption = "Exercise Guidelines and ALT Category (Odds Ratios)", align = "c")
+
+# GGT
+GGT.exercise.OR = bind_rows(extract_exercise_OR(GGT.crude, "Crude"),
+                            extract_exercise_OR(GGT.main,  "Adjusted"))
+GGT.exercise.OR = GGT.exercise.OR %>%
+  mutate(`OR (95% CI)` = sprintf("%.2f (%.2f, %.2f)", OR, conf.low, conf.high),
+         `p-value` = ifelse(p.value < 0.0001, "<0.0001", sprintf("%.4f", p.value)))
+kable(GGT.exercise.OR, 
+      caption = "Exercise Guidelines and GGT Category (Odds Ratios)", align = "c")
+```
+
+The interaction table is drafted below, if needed.
+
+```{r}
+# Interactions
+extract_interactions = function(model) {
+  
+  tidy(model) %>% filter(grepl("^ExerciseGuidelines", term)) %>%
+    select(Outcome = y.level, term, estimate, std.error, p.value)
+  
+}
+
+ALT.interactions = extract_interactions(ALT.int)
+GGT.interactions = extract_interactions(GGT.int)
+
+kable(ALT.interactions, digits = 3, 
+      caption = "ALT Interaction Model: Exercise-Related Terms")
+
+kable(GGT.interactions, digits = 3, 
+      caption = "GGT Interaction Model: Exercise-Related Terms")
+```
+
+# Plots
+
+## Plots 1: `ExerciseGuidelines` with `ALT3/GGT3`
+
+To use the categorical variables as in the main model, we will set the $y$-axis as the predicted probabilities instead of the numerical values. Also the error bars are using $95\%$ confidence intervals.
+
+```{r}
+# ALT predicted probabilities
+ALT.prob = emmeans(ALT.main, ~ ALT3 | ExerciseGuidelines, mode = "prob") %>%
+  as.data.frame() %>% rename(Outcome = ALT3) %>% mutate(Biomarker = "ALT")
+
+# GGT predicted probabilities
+GGT.prob = emmeans(GGT.main, ~ GGT3 | ExerciseGuidelines, mode = "prob") %>%
+  as.data.frame() %>% rename(Outcome = GGT3) %>% mutate(Biomarker = "GGT")
+
+# Combine
+biomarker.prob = bind_rows(ALT.prob, GGT.prob)
+```
+
+```{r}
+# Significance tests
+ALT.exercise.test = emmeans(ALT.main, ~ ExerciseGuidelines | ALT3,
+                            mode = "prob") %>% 
+  pairs(adjust = "none") %>% test(by = NULL, adjust = "holm") %>% 
+  as.data.frame() %>% rename(Outcome = ALT3) %>% mutate(Biomarker = "ALT")
+GGT.exercise.test = emmeans(GGT.main, ~ ExerciseGuidelines | GGT3,
+                            mode = "prob") %>%
+  pairs(adjust = "none") %>% test(by = NULL, adjust = "holm") %>%
+  as.data.frame() %>% rename(Outcome = GGT3) %>% mutate(Biomarker = "GGT")
+
+exercise.tests = bind_rows(ALT.exercise.test, GGT.exercise.test) %>%
+  mutate(signif = case_when(p.value < 0.0001 ~ "****",
+                            p.value < 0.001 ~ "***",
+                            p.value < 0.01 ~ "**",
+                            p.value < 0.05 ~ "*",
+                            TRUE ~ "ns"))
+
+annotation.dat = biomarker.prob %>% group_by(Biomarker, Outcome) %>%
+  summarise(y.position = max(upper.CL) + 0.04, .groups = "drop") %>%
+  left_join(exercise.tests %>% select(Biomarker, Outcome, signif), 
+            by = c("Biomarker", "Outcome")) %>%
+  mutate(group1 = "Yes", group2 = "No")
+
+prob.plot = ggplot(biomarker.prob, aes(x = ExerciseGuidelines, y = prob)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), width = 0.16) +
+  stat_pvalue_manual(annotation.dat, xmin = "group1", xmax = "group2",
+                     y.position = "y.position", label = "signif", 
+                     tip.length = 0.01) +
+  facet_grid(Biomarker ~ Outcome) + 
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, 0.9)) +
+  labs(x = "Exercise Guidelines", y = "Adjusted Predicted Probability",
+       title = "Adjusted ALT and GGT Category Probabilities by Exercise Status") +
+  theme_classic() + theme(panel.border = element_rect(colour = "black",
+                                                      fill = NA,
+                                                      linewidth = 0.4))
+prob.plot
+```
+
+### Contrasts and Difference Plots
+
+Some numerical results and tests as well for the contrasts; these test within each ALT/GGT category, how the model-adjusted predicted probability differ between `ExerciseGuidelines` is Yes and No. These are not tests of the multinomial coefficients themselves, but are a better representation of the significance stars in the plot.
+
+```{r}
+# ALT
+ALT.exercise.test = emmeans(ALT.main, ~ ExerciseGuidelines | ALT3, 
+                            mode = "prob") %>% pairs(adjust = "holm")
+ALT.exercise.test
+
+# GGT
+GGT.exercise.test = emmeans(GGT.main, ~ ExerciseGuidelines | GGT3, 
+                            mode = "prob") %>% pairs(adjust = "holm")
+GGT.exercise.test
+```
+
+**Interpretation.**
+
+- Low ALT: Yes - No = 0.000405, or about +0.04 percentage points. Essentially no difference; $p=0.9750$.
+- Borderline ALT: Yes - No = 0.012353, or about +1.24 percentage points for people meeting the exercise guideline. $p=0.1766$, so no statistically significant evidence of a difference.
+- High ALT: Yes - No = -0.012758, or about −1.28 percentage points. People meeting the guideline have a slightly lower adjusted predicted probability of High ALT, but $p=0.2122$, so again there is no statistically significant evidence of a difference.
+- Overall: after adjustment for the covariates in ALT.main, there is no clear evidence that ALT-category probabilities differ by exercise-guideline status.
+
+- Low GGT: Yes - No = 0.04478, so people meeting the exercise guideline have an adjusted predicted probability of Low GGT about 4.48 percentage points higher than those not meeting it. $p=0.0038$.
+- Borderline GGT: difference = -0.00455, or about −0.46 percentage points. This is tiny and not statistically significant, $p=0.6303$.
+- High GGT: difference = -0.04023, meaning people meeting the exercise guideline have an adjusted predicted probability of High GGT about 4.02 percentage points lower. $p=0.0037$.
+- Overall: the model suggests exercise-guideline status is associated mainly with a shift from the High GGT category toward the Low GGT category, rather than much change in the Borderline category.
+
+We can make a related difference plot for these as well, which may be better for us compared to the previous plot for interpretations.
+
+```{r}
+# Differences
+ALT.diff = emmeans(ALT.main, ~ ExerciseGuidelines | ALT3, mode = "prob") %>%
+  pairs(adjust = "holm") %>% confint(by = NULL, adjust = "holm") %>%
+  as.data.frame() %>% rename(Outcome = ALT3) %>% mutate(Biomarker = "ALT")
+
+GGT.diff = emmeans(GGT.main, ~ ExerciseGuidelines | GGT3, mode = "prob") %>%
+  pairs(adjust = "holm") %>% confint(by = NULL, adjust = "holm") %>%
+  as.data.frame() %>% rename(Outcome = GGT3) %>% mutate(Biomarker = "GGT")
+prob.diff = bind_rows(ALT.diff, GGT.diff)
+
+# Plot
+diffs = ggplot(prob.diff, aes(x = estimate, y = Outcome)) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_point(size = 3) +
+  geom_errorbarh(aes(xmin = lower.CL, xmax = upper.CL), height = 0.12) +
+  facet_wrap(~ Biomarker) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Adjusted Probability Difference (Yes − No)",
+       y = "Biomarker Category",
+       title = "Adjusted Difference in ALT and GGT Category Probabilities") +
+  theme_classic() +
+  theme(panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.4))
+diffs
+```
+
+## Interaction Plots
+
+We plot the interaction difference plots e.g., plotting the value of $$P(\text{High}\mid\text{Exercise=Yes})-P(\text{High}\mid\text{Exercise=No})$$for each set of relevant variables.
+
+```{r}
+# Helper function
+get_interaction_diff = function(model, outcome, moderator, biomarker) {
+  
+  specs = as.formula(paste("~ ExerciseGuidelines |", moderator, "+", outcome))
+  emm = emmeans(model, specs, mode = "prob")
+  
+  pairs(emm, adjust = "none") %>% 
+    summary(infer = c(TRUE, TRUE), level = 0.95, adjust = "none") %>%
+    as.data.frame() %>%
+    rename(Level = all_of(moderator), Outcome = all_of(outcome)) %>%
+    mutate(Biomarker = biomarker)
+  
+}
+
+# Smoking
+ALT.smoking.diff = get_interaction_diff(ALT.int, outcome = "ALT3",
+                                        moderator = "SmokingDuration",
+                                        biomarker = "ALT")
+GGT.smoking.diff = get_interaction_diff(GGT.int, outcome = "GGT3", 
+                                        moderator = "SmokingDuration",
+                                        biomarker = "GGT")
+smoking.diff = bind_rows(ALT.smoking.diff, GGT.smoking.diff)
+
+smoking = ggplot(smoking.diff, aes(x = estimate, y = Level)) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.5) +
+  geom_errorbarh(aes(xmin = lower.CL, xmax = upper.CL), height = 0.12) +
+  geom_point(size = 2.5) + facet_grid(Biomarker ~ Outcome) +
+  scale_x_continuous(labels = percent_format(accuracy = 1)) +
+  labs(x = "Adjusted Probability Difference (Exercise Yes − No)",
+       y = "Smoking Duration",
+       title = "Physical Guidelines Effect Across Smoking Duration") +
+  theme_classic() +
+  theme(panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.4))
+smoking
+```
+
+```{r}
+# Alcohol
+ALT.alcohol.diff = get_interaction_diff(ALT.int,outcome = "ALT3",
+                                        moderator = "AlcoholRisk",
+                                        biomarker = "ALT")
+GGT.alcohol.diff = get_interaction_diff(GGT.int, outcome = "GGT3",
+                                        moderator = "AlcoholRisk",
+                                        biomarker = "GGT")
+alcohol.diff = bind_rows(ALT.alcohol.diff, GGT.alcohol.diff)
+
+# Plot
+alc = ggplot(alcohol.diff, aes(x = estimate, y = Level)) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.5) +
+  geom_errorbarh(aes(xmin = lower.CL, xmax = upper.CL), height = 0.12) +
+  geom_point(size = 2.5) + facet_grid(Biomarker ~ Outcome) +
+  scale_x_continuous(labels = percent_format(accuracy = 1)) +
+  labs(x = "Adjusted Probability Difference (Exercise Yes − No)",
+       y = "Alcohol Risk",
+       title = "Physical Guidelines Effect Across Alcohol Risk") +
+  theme_classic() +
+  theme(panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.4))
+alc
+```
+
+Note that the nteraction model/test provides evidence about whether effect modification existsl the interaction-difference plots above tells us where that modification appears to occur and how large the subgroup-specific differences are.
