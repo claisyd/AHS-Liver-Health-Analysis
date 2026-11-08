@@ -1,0 +1,415 @@
+---
+title: "STAT3888: Model Diagnostics and Evaluation"
+author: "Calvin Lai"
+date: today
+format:
+  html:
+    theme: cosmo
+    code-fold: show
+    highlight-style: github
+    embed-resources: true
+---
+
+```{r include = F}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, 
+                      fig.align='center', fig.dim=c(10, 8))
+
+library(tidyverse)
+library(here)
+library(knitr)
+library(broom)
+library(nnet)
+library(performance)
+library(patchwork)
+library(pROC)
+```
+
+In this document, we will try to conduct some model diagnostics and evaluation for our four multinomial logistic regression models. In particular, we will check
+
+1. Model Diagnostics: Convergence, sparsity, outliers, and assumption checking.
+2. Sensitivity Analysis: Influence (using case-deletion sensitivity).
+3. Model Evaluation: Log-loss and multi-class AUC; these will likely be between the models fit with `pdat.full` against those fit with `fdat.full` for ALT and GGT respectively.
+
+```{r}
+# Initialise data (only complete cases, since our model is trained only on
+# complete cases only anyway)
+pdat.full = readRDS(here("Objects", "pdat_full.rds"))
+fdat.full = readRDS(here("Objects", "fdat_full.rds"))
+
+# Initialise models
+alt.mlr = readRDS(here("Objects", "MLR_ALT3.rds"))
+ggt.mlr = readRDS(here("Objects", "MLR_GGT3.rds"))
+alt.fmlr = readRDS(here("Objects", "Full_data_MLR_ALT3.rds"))
+ggt.fmlr = readRDS(here("Objects", "Full_data_MLR_GGT3.rds"))
+```
+
+# Model Diagnostics
+
+## Sparsity Checks
+
+We first create contingency tables for each variable/outcome pair and model, for potential sparsity.
+
+```{r}
+# Contingency Tables for alt.mlr
+xtabs(~ ALT3 + AGEB, data = model.frame(alt.mlr))
+xtabs(~ ALT3 + SEX, data = model.frame(alt.mlr))
+xtabs(~ ALT3 + DSMKHHRB, data = model.frame(alt.mlr))
+xtabs(~ ALT3 + WAIST, data = model.frame(alt.mlr))
+
+# Contingency Tables for ggt.mlr
+xtabs(~ GGT3 + AGEB, data = model.frame(ggt.mlr))
+xtabs(~ GGT3 + SEX, data = model.frame(ggt.mlr))
+xtabs(~ GGT3 + DSMKHHRB, data = model.frame(ggt.mlr))
+xtabs(~ GGT3 + WAIST, data = model.frame(ggt.mlr))
+
+# Contingency Tables for alt.fmlr
+xtabs(~ ALT3 + AGEB, data = model.frame(alt.fmlr))
+xtabs(~ ALT3 + SEX, data = model.frame(alt.fmlr))
+xtabs(~ ALT3 + DSMKHHRB, data = model.frame(alt.fmlr))
+xtabs(~ ALT3 + WAIST, data = model.frame(alt.fmlr))
+
+# Contingency Tables for ggt.fmlr
+xtabs(~ GGT3 + AGEB, data = model.frame(ggt.fmlr))
+xtabs(~ GGT3 + SEX, data = model.frame(ggt.fmlr))
+xtabs(~ GGT3 + DSMKHHRB, data = model.frame(ggt.fmlr))
+xtabs(~ GGT3 + WAIST, data = model.frame(ggt.fmlr))
+```
+
+Based on this, it may suggest at some point that we should collapse `DSMKHHRB` and `AGEB` levels. 
+
+## Convergence, AIC and Deviance
+
+Next, we check convergence of the models. If the model `convergence` value is `0` then it means the model iterations finished before hitting the maximum iteration limit; i.e. it converges successfully! We also summarise the deviance and AIC for each model.
+
+```{r}
+# Convergence
+conv = c(alt.mlr$convergence, ggt.mlr$convergence, 
+         alt.fmlr$convergence, ggt.fmlr$convergence)
+conv.log = (conv == 0)
+models = c("ALT MLR", "GGT MLR", "ALT Full MLR", "GGT Full MLR")
+aic = c(alt.mlr$AIC, ggt.mlr$AIC, alt.fmlr$AIC, ggt.fmlr$AIC)
+deviance = c(alt.mlr$deviance, ggt.mlr$deviance, 
+             alt.fmlr$deviance, ggt.fmlr$deviance)
+models.df = data.frame("Model" = models, "Convergence" = conv.log,
+                       "AIC" = aic, "Deviance" = deviance)
+kable(models.df, align = "cccc")
+```
+
+## Outliers
+
+We use the probability assigned to the observed class, as a measure of outlyingness for each observation. We can do this by quantifying the individual deviance contribution, as implemented below.
+
+```{r}
+# Outlier analysis for ALT Subpopulation Model
+prob = predict(alt.mlr, type = "probs")
+obs = model.response(model.frame(alt.mlr))
+p_true = prob[cbind(seq_along(obs), match(obs, colnames(prob)))]
+dev_i = -2 * log(p_true)
+
+# Top 10 observations
+top.10.idx.alt = order(dev_i, decreasing = TRUE)[1:10]
+top.10.devs.alt = dev_i[top.10.idx.alt]
+top.10.outliers.alt = data.frame("ABSLID" = pdat.full$ABSLID[top.10.idx.alt],
+                             "Deviance" = top.10.devs.alt)
+kable(top.10.outliers.alt, align = "cc", caption = "ALT Model Top 10 Outliers")
+  
+# Visualisation
+plot(dev_i, type = "h", main = "Individual Deviances of ALT Model",
+     xlab = "Index", ylab = "Deviance", ylim = c(0, max(dev_i) * 1.15))
+points(dev_i, pch = 19, col = "steelblue", cex = 1)
+points(top.10.idx.alt, top.10.devs.alt, pch = 19, col = "darkred", cex = 1.2)
+
+# Outlier analysis for GGT Subpopulation Model
+prob = predict(ggt.mlr, type = "probs")
+obs = model.response(model.frame(ggt.mlr))
+p_true = prob[cbind(seq_along(obs), match(obs, colnames(prob)))]
+dev_i = -2 * log(p_true)
+
+# Top 10 observations
+top.10.idx.ggt = order(dev_i, decreasing = TRUE)[1:10]
+top.10.devs.ggt = dev_i[top.10.idx.ggt]
+top.10.outliers.ggt = data.frame("ABSLID" = pdat.full$ABSLID[top.10.idx.ggt],
+                             "Deviance" = top.10.devs.ggt)
+kable(top.10.outliers.ggt, align = "cc", caption = "GGT Model Top 10 Outliers")
+  
+# Visualisation
+plot(dev_i, type = "h", main = "Individual Deviances of GGT Model",
+     xlab = "Index", ylab = "Deviance", ylim = c(0, max(dev_i) * 1.15))
+points(dev_i, pch = 19, col = "steelblue", cex = 1)
+points(top.10.idx.ggt, top.10.devs.ggt, pch = 19, col = "darkred", cex = 1.2)
+```
+
+```{r}
+# Outlier analysis for ALT Full Population Model
+prob = predict(alt.fmlr, type = "probs")
+obs = model.response(model.frame(alt.fmlr))
+p_true = prob[cbind(seq_along(obs), match(obs, colnames(prob)))]
+dev_i = -2 * log(p_true)
+
+# Top 10 observations
+top.10.idx.altf = order(dev_i, decreasing = TRUE)[1:10]
+top.10.devs.altf = dev_i[top.10.idx.altf]
+top.10.outliers.altf = data.frame("ABSLID" = fdat.full$ABSLID[top.10.idx.altf],
+                             "Deviance" = top.10.devs.altf)
+kable(top.10.outliers.altf, align = "cc", caption = "ALT Full Model Top 10 Outliers")
+  
+# Visualisation
+plot(dev_i, type = "h", main = "Individual Deviances of ALT Full Model",
+     xlab = "Index", ylab = "Deviance", ylim = c(0, max(dev_i) * 1.15))
+points(dev_i, pch = 19, col = "steelblue", cex = 1)
+points(top.10.idx.altf, top.10.devs.altf, pch = 19, col = "darkred", cex = 1.2)
+
+# Outlier analysis for GGT Full Population Model
+prob = predict(ggt.fmlr, type = "probs")
+obs = model.response(model.frame(ggt.fmlr))
+p_true = prob[cbind(seq_along(obs), match(obs, colnames(prob)))]
+dev_i = -2 * log(p_true)
+
+# Top 10 observations
+top.10.idx.ggtf = order(dev_i, decreasing = TRUE)[1:10]
+top.10.devs.ggtf = dev_i[top.10.idx.ggtf]
+top.10.outliers.ggtf = data.frame("ABSLID" = fdat.full$ABSLID[top.10.idx.ggtf],
+                             "Deviance" = top.10.devs.ggtf)
+kable(top.10.outliers.ggtf, align = "cc", caption = "GGT Full Model Top 10 Outliers")
+  
+# Visualisation
+plot(dev_i, type = "h", main = "Individual Deviances of GGT Full Model",
+     xlab = "Index", ylab = "Deviance", ylim = c(0, max(dev_i) * 1.15))
+points(dev_i, pch = 19, col = "steelblue", cex = 1)
+points(top.10.idx.ggtf, top.10.devs.ggtf, pch = 19, col = "darkred", cex = 1.2)
+```
+
+## Collinearity Analysis
+
+We cannot use VIF for our models, as the standard functions do not work well from my testing. Instead, we use matrix methods to determine whether there is perfect multicollinearity, where we essentially check the rank of the QR factorisation of the design matrix $\mathbf X$ and compare that to the number of columns of $\mathbf X$. The condition number $\kappa$ also measures how "close" we are to numerical multicollinearity; smaller values mean that the "multicollinearity" here is not as strong. The values below do show some moderate concern.
+
+```{r}
+# Helper function
+rk.collinear.check = function(model, model_name = NULL) {
+  
+  X = model.matrix(model)
+  X_no_intercept = X[, colnames(X) != "(Intercept)", drop = FALSE]
+  qr_rank = qr(X)$rank
+  n_cols = ncol(X)
+  
+  data.frame(model = ifelse(is.null(model_name), "", model_name),
+             n_obs = nrow(X),
+             n_columns = n_cols,
+             qr_rank = qr_rank,
+             rank_deficiency = n_cols - qr_rank,
+             full_rank = qr_rank == n_cols,
+             kappa = kappa(X_no_intercept))
+  
+}
+
+# Calculating
+col_alt = rk.collinear.check(alt.mlr, "ALT")
+col_ggt = rk.collinear.check(ggt.mlr, "GGT")
+col_altf = rk.collinear.check(alt.fmlr, "ALT Full")
+col_ggtf = rk.collinear.check(ggt.fmlr, "GGT Full")
+
+# Table
+col.res = bind_rows(col_alt, col_ggt, col_altf, col_ggtf)
+new.cols = c("Model", "# Obs", "# Columns", "QR Rank", 
+             "Rank Deficiency", "Full Rank", "Kappa")
+kable(col.res, digits = 3, align = "cccccccc", col.names = new.cols,
+      caption = "Collinearity Checks for MLR Models; Check Full Rank = True")
+```
+
+It seems that the collinearity assumption is violated for the restricted models, which gives us some evidence that we may have to restrict our modelling to the full adult population. 
+
+We can check what is causing the rank deficiency as follows.
+
+```{r}
+# ALT rank deficiency check
+X = model.matrix(alt.mlr)
+q = qr(X)
+independent_cols = q$pivot[seq_len(q$rank)]
+dependent_cols = q$pivot[seq.int(q$rank + 1, ncol(X))]
+colnames(X)[dependent_cols]
+
+# GGT rank deficiency check
+X = model.matrix(ggt.mlr)
+q = qr(X)
+independent_cols = q$pivot[seq_len(q$rank)]
+dependent_cols = q$pivot[seq.int(q$rank + 1, ncol(X))]
+colnames(X)[dependent_cols]
+```
+
+In both cases, it is the last category of `AGEB`. This tells us we could either try checking if we can drop levels, or collapse the age variable at some point. Overall, this result gives another reason to be more cautious about coefficient estimates from the restricted population, which is consistent with the instability we have already been seeing there.
+
+# Sensitivity Analysis
+
+We will take the top 10 outliers from above, and then measure their influence by removing them from our model data set, and see what happens to the `EXREGUIC` coefficients. In essence this helps us answer the question: Of the ten worst-fitting participants, which ones have the largest impact on the estimated association between exercise and ALT/GGT?
+
+```{r}
+# Helper function
+case.delete.influence = function(model, top_idx) {
+  
+  dat = model.frame(model)
+  beta_original = coef(model)
+  se_original = summary(model)$standard.errors
+  
+  results = lapply(top_idx, function(i) {
+    
+    fit_i = multinom(formula(model), data = dat[-i, , drop = FALSE],
+                     Hess = TRUE, trace = FALSE)
+    beta_i = coef(fit_i)
+    
+    # Ensure dimensions match
+    change = beta_i - beta_original
+    scaled_change = change / se_original
+    data.frame(index = i,
+               outcome = rep(rownames(beta_original), each = ncol(beta_original)),
+               term = rep(colnames(beta_original), times = nrow(beta_original)),
+               original = as.vector(t(beta_original)),
+               deleted = as.vector(t(beta_i)),
+               absolute_change = as.vector(t(change)),
+               percent_change = 100 * as.vector(t(change)) / 
+                 as.vector(t(beta_original)),
+               scaled_change = as.vector(t(scaled_change))
+               
+    )
+    
+  })
+  
+  bind_rows(results)
+  
+}
+
+# Applying to our models; take only EXREGUIC
+new.cols = c("Index", "Outcome", "Original", "Deleted", "Abs Change", 
+             "% Change", "Scaled Change")
+infl.alt = case.delete.influence(alt.mlr, top.10.idx.alt) %>% 
+  filter(grepl("^EXREGUIC", term)) %>% arrange(index) %>% 
+  select(-term)
+kable(infl.alt, digits = 3, 
+      caption = "Influence Measures for ALT on EXREGUIC (Did Not Meet Recommended Guidelines)", 
+      align = "cccccccc", col.names = new.cols)
+
+infl.ggt = case.delete.influence(ggt.mlr, top.10.idx.ggt) %>% 
+  filter(grepl("^EXREGUIC", term)) %>% arrange(index) %>% 
+  select(-term)
+kable(infl.ggt, digits = 3, 
+      caption = "Influence Measures for GGT on EXREGUIC (Did Not Meet Recommended Guidelines)", 
+      align = "cccccccc", col.names = new.cols)
+
+infl.altf = case.delete.influence(alt.fmlr, top.10.idx.altf) %>% 
+  filter(grepl("^EXREGUIC", term)) %>% arrange(index) %>% 
+  select(-term)
+kable(infl.altf, digits = 3, 
+      caption = "Influence Measures for ALT Full on EXREGUIC (Did Not Meet Recommended Guidelines)", 
+      align = "cccccccc", col.names = new.cols)
+
+infl.ggtf = case.delete.influence(ggt.fmlr, top.10.idx.ggtf) %>% 
+  filter(grepl("^EXREGUIC", term)) %>% arrange(index) %>% 
+  select(-term)
+kable(infl.ggtf, digits = 3, 
+      caption = "Influence Measures for GGT Full on EXREGUIC (Did Not Meet Recommended Guidelines)", 
+      align = "cccccccc", col.names = new.cols)
+```
+
+It may be easier to visualise the changes.
+
+```{r}
+# Visualise the differences
+p1 = ggplot(infl.alt, aes(x = factor(index), y = scaled_change, fill = outcome)) +
+  geom_col(position = "dodge") +
+  geom_hline(yintercept = 0, linetype = 2) +
+  labs(x = "Deleted observation", y = "Change in coefficient / original SE",
+       fill = "Outcome comparison", title = "Influence Analysis for ALT") +
+  theme_linedraw()
+
+p2 = ggplot(infl.ggt, aes(x = factor(index), y = scaled_change, fill = outcome)) +
+  geom_col(position = "dodge") +
+  geom_hline(yintercept = 0, linetype = 2) +
+  labs(x = "Deleted observation", y = "Change in coefficient / original SE",
+       fill = "Outcome comparison", title = "Influence Analysis for GGT") +
+  theme_linedraw()
+
+p3 = ggplot(infl.altf, aes(x = factor(index), y = scaled_change, fill = outcome)) +
+  geom_col(position = "dodge") +
+  geom_hline(yintercept = 0, linetype = 2) +
+  labs(x = "Deleted observation", y = "Change in coefficient / original SE",
+       fill = "Outcome comparison", title = "Influence Analysis for ALT Full") +
+  theme_linedraw()
+
+p4 = ggplot(infl.ggtf, aes(x = factor(index), y = scaled_change, fill = outcome)) +
+  geom_col(position = "dodge") +
+  geom_hline(yintercept = 0, linetype = 2) +
+  labs(x = "Deleted observation", y = "Change in coefficient / original SE",
+       fill = "Outcome comparison", title = "Influence Analysis for GGT Full") +
+  theme_linedraw()
+
+p1 + p2
+p3 + p4
+```
+
+# Model Evaluation
+
+We will use the Hand-Till multiclass AUC and log-loss to essentially compare the ALT model under the subpopulation against the ALT model under the full population, and similarly for GGT. This helps us answer: does the model discriminate/predict liver-enzyme category differently in the restricted population versus the broader adult population?
+
+## Multi-class AUC
+
+We use the `pROC::multiclass.roc` implementation to calculate the AUCROC, and then return the results as a clean data frame.
+
+```{r}
+# Helper function
+get_multiclass_auc = function(model, model_name = NULL) {
+  
+  obs = model.response(model.frame(model))
+  prob = predict(model, type = "probs")
+  
+  roc_obj = multiclass.roc(response = obs, predictor = prob)
+  data.frame(model = ifelse(is.null(model_name), "", model_name),
+             multiclass_auc = as.numeric(roc_obj$auc))
+  
+}
+
+auc.results = bind_rows(get_multiclass_auc(alt.mlr, "ALT"),
+                        get_multiclass_auc(ggt.mlr, "GGT"),
+                        get_multiclass_auc(alt.fmlr, "ALT Full"),
+                        get_multiclass_auc(ggt.fmlr, "GGT Full"))
+```
+
+## Log Loss
+
+Log-loss is essentially the average negative log probability assigned to the truth. It is one of the recommended scores to compare classification algorithms, so we use it here.
+
+```{r}
+# Helper function
+get_log_loss = function(model, model_name = NULL) {
+  
+  obs = model.response(model.frame(model))
+  prob = predict(model, type = "probs")
+  true_class_col = match(obs, colnames(prob))
+  p_true = prob[cbind(seq_along(obs), true_class_col)]
+  log_loss = -mean(log(p_true))
+  
+  data.frame(model = ifelse(is.null(model_name), "", model_name),
+             log_loss = log_loss)
+  
+}
+
+LL.results = bind_rows(get_log_loss(alt.mlr, "ALT"),
+                       get_log_loss(ggt.mlr, "GGT"),
+                       get_log_loss(alt.fmlr, "ALT Full"),
+                       get_log_loss(ggt.fmlr, "GGT Full"))
+```
+
+## Overall Evaluation
+
+We combine the two tables for easy comparison between the restricted and full models
+
+```{r}
+eval.tab = inner_join(auc.results, LL.results, by = "model")
+eval.tab.sorted = eval.tab[c(1, 3, 2, 4), ]
+
+kable(eval.tab.sorted, caption = "AUCROC and Log Loss Results for Our Models",
+      align = "cc", 
+      col.names = c("Model", "Multiclass AUC", "Log Loss"), digits = 4)
+```
+
+The multinomial models showed modest in-sample discriminatory ability, with multiclass AUC values ranging from 0.620 to 0.715. The restricted-population models had higher AUCs for both ALT and GGT, although the full-population models had lower log loss. As AUC and log loss assess different aspects of model performance, and the restricted and full models were fitted to different populations with potentially different class distributions, these measures should not be interpreted as a direct ranking of model quality. Furthermore, the metrics are calculated in-sample and therefore describe model fit to the observed data rather than performance on unseen participants.
+
+In other words, the models have some ability to distinguish liver-enzyme categories, but they are not highly predictive classifiers; these results are mainly a diagnostic check rather than evidence that the models could accurately classify new individuals.

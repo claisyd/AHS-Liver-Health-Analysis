@@ -1,0 +1,651 @@
+---
+title: "STAT3888: Post-Feedback Revisions"
+author: "Calvin Lai"
+date: today
+format:
+  html:
+    theme: cosmo
+    code-fold: show
+    highlight-style: github
+    embed-resources: true
+---
+
+The post-feedback revisions will include the following changes:
+
+- Replacing the categorical `WAIST` with `PHDCMWBC` for continuous waist circumference.
+- Reform the alcohol consumption level and smoking duration as confounders instead of filtering variables, and remove `DSMKHHRB`.
+- Change `AGEB` to numerical values by taking mid-points, to hopefully increase power and reduce number of parameters.
+- Adding income (`INCDECPN`) and education level (`EDATTQ2`) as more confounders as well for socioeconomic status proxies.
+- After fitting the multinomial logistic regression model under these new variables, maybe try converting ALT and GGT to continuous variables and fitting a regression model.
+
+# Dataset Rework
+
+```{r warning = F, message = F}
+# Initialisation
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, 
+                      fig.align='center', fig.dim=c(10, 8))
+
+library(tidyverse)
+library(here)
+library(naniar)
+library(nnet)
+library(broom)
+library(knitr)
+library(car)
+library(gglm)
+library(patchwork)
+library(effects)
+library(mice)
+library(mgcv)
+library(MASS)
+library(brant)
+
+# Take original PHDCMWBC from BSP
+bsp.raw = read.csv(here("NHS/AHSnhs11bsp.csv"))
+waist.raw = bsp.raw$PHDCMWBC
+waist.cont = case_when(waist.raw %in% c(0, 998, 999) ~ NA,
+                       TRUE ~ waist.raw)
+
+# New age variable
+age.raw = bsp.raw$AGEB
+age.vals = case_when(age.raw %in% c(1, 2, 3, 4) ~ NA,
+                age.raw == 5 ~ 18.5,
+                age.raw == 6 ~ 22,
+                age.raw == 7 ~ 27,
+                age.raw == 8 ~ 32,
+                age.raw == 9 ~ 37,
+                age.raw == 10 ~ 42,
+                age.raw == 11 ~ 47,
+                age.raw == 12 ~ 52,
+                age.raw == 13 ~ 57,
+                age.raw == 14 ~ 62,
+                age.raw == 15 ~ 67,
+                age.raw == 16 ~ 72,
+                age.raw == 17 ~ 77,
+                age.raw == 18 ~ 82,
+                age.raw == 19 ~ 87)
+age = age.vals
+
+# Variable lists
+bbi.vars = c("ABSLID", "ABSPID", "ALTRESB", "GGTRESB")
+bsp.vars = c("ABSLID", "ABSPID", "AL2K7DAY", "SMKAGEDB", "EXREGUIC", 
+             "SEX", "EDATTQ2", "INCDECPN")
+
+# Load data sets
+bsp = readRDS(here("Objects", "AHSnhs11bsp.rds"))
+bbi = readRDS(here("Objects", "AHSnhs11bbi.rds"))
+
+# Variable tables
+bbir = bbi %>% dplyr::select(all_of(bbi.vars)) %>% 
+  mutate(ALTRESB = fct_relevel(ALTRESB, levels(bbi$ALTRESB)[9]))
+bspr = bsp %>% dplyr::select(all_of(bsp.vars)) %>% 
+  mutate(EXREGUIC = fct_relevel(EXREGUIC, levels(bsp$EXREGUIC)[2]),
+         AGE = age,
+         WAIST = waist.cont)
+
+# Merge data tables and original ALT3 and GGT3 for 
+dat = inner_join(bspr, bbir, by = c("ABSLID", "ABSPID")) %>% distinct()
+dat = dat %>%
+  mutate(
+    ALT3 = case_when(
+      SEX == "Male" & ALTRESB %in% c("Less than 10", 
+                                     "10 to less than 15", 
+                                     "15 to less than 20", 
+                                     "20 to less than 25", 
+                                     "25 to less than 30") ~ "Low",
+      SEX == "Male" & ALTRESB %in% c("30 to less than 35", 
+                                     "35 to less than 40") ~ "Borderline",
+      SEX == "Male" & ALTRESB %in% c("40 to less than 45", 
+                                     "45 to less than 50", 
+                                     "More than 50") ~ "High",
+      
+      SEX == "Female" & ALTRESB %in% c("Less than 10", 
+                                     "10 to less than 15", 
+                                     "15 to less than 20", 
+                                     "20 to less than 25") ~ "Low",
+      SEX == "Female" & ALTRESB == "25 to less than 30" ~ "Borderline",
+      SEX == "Female" & ALTRESB %in% c("30 to less than 35", 
+                                     "35 to less than 40",
+                                     "40 to less than 45", 
+                                     "45 to less than 50", 
+                                     "More than 50") ~ "High",
+      TRUE ~ NA
+    ) %>% as.factor(),
+    GGT3 = case_when(
+      SEX == "Male" & GGTRESB %in% c("10 or less", "More than 10 to 15", 
+                                     "More than 15 to 20", 
+                                     "More than 20 to 25", 
+                                     "More than 25 to 30", 
+                                     "More than 30 to 35",
+                                     "More than 35 to 40", 
+                                     "More than 40 to 45") ~ "Low",
+      SEX == "Male" & GGTRESB %in% c("More than 45 to 50",
+                                     "More than 50 to 55")  ~ "Borderline",
+      SEX == "Male" & GGTRESB %in% c("More than 55 to 60",
+                                     "More than 60") ~ "High",
+      
+      SEX == "Female" & GGTRESB %in% c("10 or less", "More than 10 to 15", 
+                                     "More than 15 to 20", 
+                                     "More than 20 to 25", 
+                                     "More than 25 to 30") ~ "Low",
+      SEX == "Female" & GGTRESB == "More than 30 to 35" ~ "Borderline",
+      SEX == "Female" & GGTRESB %in% c("More than 35 to 40", 
+                                     "More than 40 to 45", 
+                                     "More than 45 to 50",
+                                     "More than 50 to 55",
+                                     "More than 55 to 60", 
+                                     "More than 60") ~ "High",
+      TRUE ~ NA
+    ) %>% as.factor(),
+    EXREGUIC = relevel(EXREGUIC, ref = "Met recommended guidelines")
+  ) %>% 
+  mutate(ALT3 = fct_relevel(ALT3, "Low", "Borderline", "High"),
+         GGT3 = fct_relevel(GGT3, "Low", "Borderline", "High"))
+
+# Make numerical ALT and GGT
+set.seed(3888)
+alt.raw = dat$ALTRESB
+alt.vals = case_when(
+  alt.raw == "Less than 10" ~ 5,
+  alt.raw == "10 to less than 15" ~ 12.5,
+  alt.raw == "15 to less than 20" ~ 17.5,
+  alt.raw == "20 to less than 25" ~ 22.5,
+  alt.raw == "25 to less than 30" ~ 27.5,
+  alt.raw == "30 to less than 35" ~ 32.5,
+  alt.raw == "35 to less than 40" ~ 37.5,
+  alt.raw == "40 to less than 45" ~ 42.5,
+  alt.raw == "45 to less than 50" ~ 47.5,
+  alt.raw == "More than 50" ~ 52.5)
+ALT = alt.vals
+
+set.seed(3882)
+ggt.raw = dat$GGTRESB
+ggt.vals = case_when(
+  ggt.raw == "10 or less" ~ 5,
+  ggt.raw == "More than 10 to 15" ~ 12.5,
+  ggt.raw == "More than 15 to 20" ~ 17.5,
+  ggt.raw == "More than 20 to 25" ~ 22.5,
+  ggt.raw == "More than 25 to 30" ~ 27.5,
+  ggt.raw == "More than 30 to 35" ~ 32.5,
+  ggt.raw == "More than 35 to 40" ~ 37.5,
+  ggt.raw == "More than 40 to 45" ~ 42.5,
+  ggt.raw == "More than 45 to 50" ~ 47.5,
+  ggt.raw == "More than 50 to 55" ~ 52.5,
+  ggt.raw == "More than 55 to 60" ~ 57.5,
+  ggt.raw == "More than 60" ~ 62.5)
+GGT = ggt.vals
+
+# Complete data
+dat = dat %>% mutate(ALT = ALT, GGT = GGT)
+gg_miss_var(dat)
+miss_var_summary(dat)
+
+# Remove missing data, and cleaning categories
+dat.full = dat %>% drop_na() %>% mutate(
+  AL2K7DAY = case_when(AL2K7DAY %in% c("Medium risk", "High risk") 
+                       ~ "Medium/High risk",
+                       .default = "Low risk") %>% as.factor(),
+  SMKAGEDB = fct_relevel(SMKAGEDB, "Never smoked daily", "Less than 10 years",
+                         "10 to 19 years", "20 to 29 years", "30 to 39 years", 
+                         "40 to 49 years", "50 years and over"),
+  EXREGUIC = fct_recode(EXREGUIC,
+                        "Yes" = "Met recommended guidelines",
+                        "No" = "Did not meet recommended guidelines"),
+  EDATTQ2 = fct_recode(EDATTQ2,
+                       "No" = "Does not have non-school qualification",
+                       "Yes" = "Has non-school qualification"),
+  ) %>% rename(
+    "AlcoholRisk" = AL2K7DAY,
+    "SmokingDuration" = SMKAGEDB,
+    "ExerciseGuidelines" = EXREGUIC,
+    "NonSchoolQuals" = EDATTQ2,
+    "Sex" = SEX,
+    "Age" = AGE,
+    "IncomeDecile" = INCDECPN,
+    "Waist" = WAIST,
+    "ALT10" = ALTRESB,
+    "GGT12" = GGTRESB
+  )
+```
+
+In this case, there are now **4694** complete cases, which I think should be enough for our analysis. We list out the variables used as well using `names()` as a check, and check each variable numerically.
+
+```{r}
+# Check variables
+names(dat.full)
+
+# Categorical variables
+categoricals = c("AlcoholRisk", "SmokingDuration", "ExerciseGuidelines", "Sex",
+                 "NonSchoolQuals", "IncomeDecile", "ALT10", "GGT12", "ALT3", "GGT3")
+for (var in categoricals) {
+  
+  p = ggplot(dat.full, aes_string(x = var, fill = var)) +
+    geom_bar() +
+    labs(title = paste("Distribution of", var), x = var, y = "Count") +
+    scale_fill_brewer(palette = "Set3") +
+    theme_linedraw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none")
+  print(p)
+  
+}
+```
+
+```{r}
+# Numeric variables
+ggplot(data = dat.full, aes(x = Age)) + 
+  geom_histogram(bins = 10, fill = "mediumslateblue", color = "white") +
+  labs(title = "Histogram of Age (Years)", x = "Age", y = "Frequency") +
+  theme_linedraw()
+
+ggplot(data = dat.full, aes(x = Waist)) + 
+  geom_histogram(bins = 10, fill = "mediumslateblue", color = "white") +
+  labs(title = "Histogram of Waist Circumference (cm)", 
+       x = "Waist Circumference", y = "Frequency") +
+  theme_linedraw()
+
+ggplot(data = dat.full, aes(x = ALT)) + 
+  geom_histogram(bins = 10, fill = "mediumslateblue", color = "white") +
+  labs(title = "Histogram of ALT", x = "ALT", y = "Frequency") +
+  theme_linedraw()
+
+ggplot(data = dat.full, aes(x = GGT)) + 
+  geom_histogram(bins = 10, fill = "mediumslateblue", color = "white") +
+  labs(title = "Histogram of GGT", x = "GGT", y = "Frequency") +
+  theme_linedraw()
+```
+
+# Multinomial Logistic Regression Fitting
+
+We fit using the same `nnet::multinom()` function as before, for `ALT3` and `GGT3`, and then also a regular linear model for `ALT` and `GGT`.
+
+```{r}
+# Multinomial Logistic Regression
+ALT.multinom = nnet::multinom(ALT3 ~ ExerciseGuidelines + Sex + AlcoholRisk + 
+                          SmokingDuration + NonSchoolQuals + IncomeDecile + 
+                          Age + Waist, data = dat.full, Hess = TRUE)
+tidy(ALT.multinom) %>% 
+  kable(caption = "ALT3 Multinomial Logistic Regression Summary Table",
+        digits = 4, align = "cccccc")
+```
+
+It seems that the effect of `ExerciseGuidelines` is not significant in either level of `ALT3`. We check for `GGT3` as well.
+
+```{r}
+# Multinomial Logistic Regression
+GGT.multinom = nnet::multinom(GGT3 ~ ExerciseGuidelines + Sex + AlcoholRisk + 
+                          SmokingDuration + NonSchoolQuals + IncomeDecile + 
+                          Age + Waist, data = dat.full, Hess = TRUE)
+tidy(GGT.multinom) %>% 
+  kable(caption = "GGT3 Multinomial Logistic Regression Summary Table",
+        digits = 4, align = "cccccc")
+```
+
+It is significant for High GGT but still not significant for Borderline GGT in this case, so there is some slight association. We now try fitting some linear models as well.
+
+# Linear Model Fitting
+
+```{r}
+# ALT Linear Model
+ALT.linear = lm(ALT ~ ExerciseGuidelines + Sex + AlcoholRisk + 
+                          SmokingDuration + NonSchoolQuals + IncomeDecile + 
+                          Age + Waist, data = dat.full)
+tidy(ALT.linear) %>% 
+  kable(caption = "ALT Linear Regression Summary Table",
+        digits = 4, align = "cccccc")
+
+# GGT Linear Model
+GGT.linear = lm(GGT ~ ExerciseGuidelines + Sex + AlcoholRisk + 
+                          SmokingDuration + NonSchoolQuals + IncomeDecile + 
+                          Age + Waist, data = dat.full)
+tidy(GGT.linear) %>% 
+  kable(caption = "GGT Linear Regression Summary Table",
+        digits = 4, align = "cccccc")
+```
+
+We do see a similar trend here where the effect of exercise is not significant in ALT but it is significant in GGT.
+
+# Model Diagnostics
+
+We next conduct model diagnostics and evaluation, especially for the case of linear regression models where it is easier to check assumptions. We check collinearity of the four models; the multinomial logistic regression models will reuse the helper function I made back in `ModelDiagnosticsQ2`, and for linear regression models we stick to regular VIF.
+
+```{r}
+# Helper function
+rk.collinear.check = function(model, model_name = NULL) {
+  
+  X = model.matrix(model)
+  X_no_intercept = X[, colnames(X) != "(Intercept)", drop = FALSE]
+  qr_rank = qr(X)$rank
+  n_cols = ncol(X)
+  
+  data.frame(model = ifelse(is.null(model_name), "", model_name),
+             n_obs = nrow(X),
+             n_columns = n_cols,
+             qr_rank = qr_rank,
+             rank_deficiency = n_cols - qr_rank,
+             full_rank = qr_rank == n_cols,
+             kappa = kappa(X_no_intercept))
+  
+}
+r1 = rk.collinear.check(ALT.multinom, "ALT3")
+r2 = rk.collinear.check(GGT.multinom, "GGT3")
+rbind(r1, r2) %>% kable(
+  caption = "Multinomial Logistic Regression Models Collinearity Check",
+  align = "ccccccc")
+
+# VIF of linear models
+vif(ALT.linear) %>% kable(
+  caption = "ALT Linear Model VIF", digits = 4, align = "ccc"
+)
+vif(GGT.linear) %>% kable(
+  caption = "GGT Linear Model VIF", digits = 4, align = "ccc"
+)
+```
+
+Overall, there is no apparent multicollinearity this time around, likely since we turned some variables to numeric such as age, in this case the models are in general seemingly more stable overall. Next, we run cross-tabulations between our different covariates and `ALT3`/`GGT3` to ensure there are no sparse categories.
+
+```{r}
+# Sparseness check for ALT3
+xtabs(~ ALT3 + AlcoholRisk, data = model.frame(ALT.multinom))
+xtabs(~ ALT3 + SmokingDuration, data = model.frame(ALT.multinom))
+xtabs(~ ALT3 + ExerciseGuidelines, data = model.frame(ALT.multinom))
+xtabs(~ ALT3 + Sex, data = model.frame(ALT.multinom))
+xtabs(~ ALT3 + NonSchoolQuals, data = model.frame(ALT.multinom))
+xtabs(~ ALT3 + IncomeDecile, data = model.frame(ALT.multinom))
+
+# Sparseness check for GGT3
+xtabs(~ GGT3 + AlcoholRisk, data = model.frame(GGT.multinom))
+xtabs(~ GGT3 + SmokingDuration, data = model.frame(GGT.multinom))
+xtabs(~ GGT3 + ExerciseGuidelines, data = model.frame(GGT.multinom))
+xtabs(~ GGT3 + Sex, data = model.frame(GGT.multinom))
+xtabs(~ GGT3 + NonSchoolQuals, data = model.frame(GGT.multinom))
+xtabs(~ GGT3 + IncomeDecile, data = model.frame(GGT.multinom))
+```
+
+Smoking duration may be a bit sparse for `50 years and over`, so I may go back and collapse that level at some point. For now, we check the residuals of the linear model for the heteroskedasticity assumption, uncorrelatedness assumption, linearity assumption, and normality assumption; we also can check high-leverage and influential points as well.
+
+```{r}
+# ALT residual diagnostics
+gglm(ALT.linear) & theme_linedraw()
+p1 = ggplot(ALT.linear) + stat_cooks_obs() + theme_linedraw()
+p2 = ggplot(ALT.linear) + stat_cooks_leverage() + theme_linedraw()
+p1 + p2
+
+# GGT residual diagnostics
+gglm(GGT.linear) & theme_linedraw()
+p1 = ggplot(GGT.linear) + stat_cooks_obs() + theme_linedraw()
+p2 = ggplot(GGT.linear) + stat_cooks_leverage() + theme_linedraw()
+p1 + p2
+```
+
+Unfortunately, it seems that the linear models are not as well-behaved as we hope, since several fundamental assumptions are clearly violated here. We can take the logarithms of ALT and GGT to see if that helps.
+
+```{r}
+# Log(ALT/GGT) models
+ALT.loglinear = lm(log(ALT) ~ExerciseGuidelines + Sex + AlcoholRisk +
+                     SmokingDuration + NonSchoolQuals + IncomeDecile + Age + Waist,
+                   data = dat.full)
+GGT.loglinear = lm(log(GGT) ~ExerciseGuidelines + Sex + AlcoholRisk +
+                     SmokingDuration + NonSchoolQuals + IncomeDecile + Age + Waist,
+                   data = dat.full)
+tidy(ALT.loglinear) %>% 
+  kable(caption = "Log ALT Linear Regression Summary Table",
+        digits = 4, align = "cccccc")
+tidy(GGT.loglinear) %>% 
+  kable(caption = "Log GGT Linear Regression Summary Table",
+        digits = 4, align = "cccccc")
+
+# VIF
+vif(ALT.loglinear) %>% kable(
+  caption = "Log ALT Linear Model VIF", digits = 4, align = "ccc"
+)
+vif(GGT.loglinear) %>% kable(
+  caption = "Log GGT Linear Model VIF", digits = 4, align = "ccc"
+)
+
+# Log ALT residual diagnostics
+gglm(ALT.loglinear) & theme_linedraw()
+p1 = ggplot(ALT.loglinear) + stat_cooks_obs() + theme_linedraw()
+p2 = ggplot(ALT.loglinear) + stat_cooks_leverage() + theme_linedraw()
+p1 + p2
+
+# Log GGT residual diagnostics
+gglm(GGT.loglinear) & theme_linedraw()
+p1 = ggplot(GGT.loglinear) + stat_cooks_obs() + theme_linedraw()
+p2 = ggplot(GGT.loglinear) + stat_cooks_leverage() + theme_linedraw()
+p1 + p2
+```
+
+This tells us the log transformation does improve on the heteroskedasticity and most of the other issues, but it does reveal more clearly the two distinct groups that `ALT` and `GGT` are distributed as; this makes sense since we originally had Low ALT/GGT as the majority and Borderline/High as a small minority.
+
+Overall, I think we can used the log-transformed linear models as a supplement, as while the results are largely the same, using the continuous form of ALT and GGT is likely more powerful for our case.
+
+# Marginal Effects of Multinomial Logistic Models
+
+We have done this in `CausalInference`, so I thought we can do the same as well here.
+
+```{r}
+# Effects
+eff.alt = effect("ExerciseGuidelines", ALT.multinom)
+plot(eff.alt, multiline = TRUE, main = "Effect Plot of ExerciseGuidelines on ALT")
+
+eff.ggt = effect("ExerciseGuidelines", GGT.multinom)
+plot(eff.ggt, multiline = TRUE, main = "Effect Plot of ExerciseGuidelines on GGT")
+```
+
+# MICE Imputation Sensitivity Analysis
+
+Again, we have done this in `SensitivityAnalyses`, so I want to try again here with the updated data set.
+
+```{r}
+# dat with all observations
+dat.all = dat %>% mutate(
+  AL2K7DAY = case_when(AL2K7DAY %in% c("Medium risk", "High risk") 
+                       ~ "Medium/High risk",
+                       .default = "Low risk") %>% as.factor(),
+  SMKAGEDB = fct_relevel(SMKAGEDB, "Never smoked daily", "Less than 10 years",
+                         "10 to 19 years", "20 to 29 years", "30 to 39 years", 
+                         "40 to 49 years", "50 years and over"),
+  EXREGUIC = fct_recode(EXREGUIC,
+                        "Yes" = "Met recommended guidelines",
+                        "No" = "Did not meet recommended guidelines"),
+  EDATTQ2 = fct_recode(EDATTQ2,
+                       "No" = "Does not have non-school qualification",
+                       "Yes" = "Has non-school qualification"),
+  ) %>% rename(
+    "AlcoholRisk" = AL2K7DAY,
+    "SmokingDuration" = SMKAGEDB,
+    "ExerciseGuidelines" = EXREGUIC,
+    "NonSchoolQuals" = EDATTQ2,
+    "Sex" = SEX,
+    "Age" = AGE,
+    "IncomeDecile" = INCDECPN,
+    "Waist" = WAIST,
+    "ALT10" = ALTRESB,
+    "GGT12" = GGTRESB
+  ) %>% dplyr::select(-c(ABSLID, ABSPID))
+
+file.name = here("Objects/dat_imputed.rds")
+if (file.exists(file.name)) {
+  dat.imp = readRDS(file.name)
+} else {
+  dat.imp = mice(dat.all, m = 10, maxit = 10, method = "pmm", printFlag = FALSE)
+  saveRDS(dat.imp, file.name)
+}
+```
+
+Next, we pool the results for ALT and then for GGT.
+
+```{r}
+# Pooled ALT
+ALT.multinom.mice = with(dat.imp, 
+                     expr = nnet::multinom(formula = ALT3 ~ ExerciseGuidelines + 
+                                             Sex +
+                                       AlcoholRisk + 
+                                       SmokingDuration + NonSchoolQuals +
+                                       IncomeDecile + Age + Waist, trace = F))
+ALT.multinom.mice.pooled = pool(ALT.multinom.mice)
+df = data.frame(summary(ALT.multinom.mice.pooled))
+Alt.Exr1 = df[c(2, 24), ] %>% 
+  mutate("y.level" = c("Borderline", "High")) %>% 
+  relocate(last_col()) %>% dplyr::select(-c(term, df))
+Alt.Exr2 = tidy(ALT.multinom)[c(2, 24), ] %>% 
+  dplyr::select(-c(term))
+ALT.rows = rbind(Alt.Exr1, Alt.Exr2) %>% 
+  mutate("Model" = rep(c("MICE", "Original"), each = 2)) %>% 
+  relocate(last_col())
+rownames(ALT.rows) = NULL
+kable(ALT.rows, caption = "Sensitivity Analysis for MICE on ALT",
+      digits = 4, align = "cccccc", 
+      col.names = c("Model", "ALT Level", "Coefficient", 
+                    "SE", "t-Score", "p-value"))
+
+# Pooled GGT
+GGT.multinom.mice = with(dat.imp, 
+                     expr = nnet::multinom(formula = GGT3 ~ ExerciseGuidelines + 
+                                             Sex +
+                                       AlcoholRisk + 
+                                       SmokingDuration + NonSchoolQuals +
+                                       IncomeDecile + Age + Waist, trace = F))
+GGT.multinom.mice.pooled = pool(GGT.multinom.mice)
+df = data.frame(summary(GGT.multinom.mice.pooled))
+GGT.Exr1 = df[c(2, 24), ] %>% 
+  mutate("y.level" = c("Borderline", "High")) %>% 
+  relocate(last_col()) %>% dplyr::select(-c(term, df))
+GGT.Exr2 = tidy(GGT.multinom)[c(2, 24), ] %>% 
+  dplyr::select(-c(term))
+GGT.rows = rbind(GGT.Exr1, GGT.Exr2) %>% 
+  mutate("Model" = rep(c("MICE", "Original"), each = 2)) %>% 
+  relocate(last_col())
+rownames(GGT.rows) = NULL
+kable(GGT.rows, caption = "Sensitivity Analysis for MICE on GGT",
+      digits = 4, align = "cccccc", 
+      col.names = c("Model", "GGT Level", "Coefficient", 
+                    "SE", "t-Score", "p-value"))
+```
+
+Overall MICE does not change significance for either ALT and GGT (i.e., significant results stay significant and likewise for non-significant results). It does suggest our model is robust to missing data, which is reassuring in that sense.
+
+# Binary Logistic Regression
+
+We can also check by combining Borderline and High for ALT and GGT as another sensitivity analysis, and in this case we can use the regular `glm` function.
+
+```{r}
+# Add ALT2 and GGT2
+dat.full = dat.full %>% mutate(
+  ALT2 = case_when(ALT3 %in% c("Borderline", "High") ~ "High",
+                   ALT3 == "Low" ~ "Low") %>% as.factor() %>% fct_rev(),
+  GGT2 = case_when(GGT3 %in% c("Borderline", "High") ~ "High",
+                   GGT3 == "Low" ~ "Low") %>% as.factor() %>% fct_rev()
+)
+table(dat.full$ALT2); table(dat.full$GGT2)
+
+# Logistic regression
+ALT.logistic = glm(ALT2 ~ ExerciseGuidelines + Sex + AlcoholRisk + 
+    SmokingDuration + NonSchoolQuals + IncomeDecile + Age + Waist, 
+    data = dat.full, family = "binomial")
+GGT.logistic = glm(GGT2 ~ ExerciseGuidelines + Sex + AlcoholRisk + 
+    SmokingDuration + NonSchoolQuals + IncomeDecile + Age + Waist, 
+    data = dat.full, family = "binomial")
+
+# Model summaries
+tidy(ALT.logistic) %>% kable(caption = "Logistic Regression on ALT2",
+                             align = "ccccc", digits = 4)
+tidy(GGT.logistic) %>% kable(caption = "Logistic Regression on GGT2",
+                             align = "ccccc", digits = 4)
+```
+
+Again, for ALT the exercise variable is highly non-significant but for GGT it is significant! We now check diagnostics as well as model comparison with our multinomial logistic regression.
+
+```{r}
+# VIF
+vif(ALT.logistic) %>% kable(
+  caption = "ALT Logistic Regression Model VIF", digits = 4, align = "ccc"
+)
+vif(GGT.logistic) %>% kable(
+  caption = "GGT Logistic Regression Model VIF", digits = 4, align = "ccc"
+)
+
+# Influential Observations
+ggplot(ALT.logistic) + stat_cooks_obs() + theme_minimal()
+ggplot(GGT.logistic) + stat_cooks_obs() + theme_minimal()
+
+# Also fit GAM as well, to check linearity of logit assumptions
+ALT.gam = gam(ALT2 ~ ExerciseGuidelines + Sex + AlcoholRisk + 
+    SmokingDuration + NonSchoolQuals + IncomeDecile + s(Age) + s(Waist),
+    data = dat.full, family = "binomial")
+GGT.gam = gam(GGT2 ~ ExerciseGuidelines + Sex + AlcoholRisk + 
+    SmokingDuration + NonSchoolQuals + IncomeDecile + s(Age) + s(Waist),
+    data = dat.full, family = "binomial")
+tidy(ALT.gam) %>% kable(caption = "GAM Spline Variables for ALT", align = "cc",
+                        digits = 4)
+tidy(GGT.gam) %>% kable(caption = "GAM Spline Variables for GGT", align = "cc",
+                        digits = 4)
+```
+
+We check using the `edf` value where `edf>1` suggests that there is a departure from linearity, so these models may not be appropriate. We can visualise the curves below as well.
+
+```{r}
+# GAM plots
+par(mfrow = c(1, 2))
+plot(ALT.gam, main = "ALT GAM Spline Fits for Age and Waist")
+
+par(mfrow = c(1, 2))
+plot(GGT.gam, main = "GGT GAM Spline Fits for Age and Waist")
+```
+
+This suggests that perhaps the binary logistic regression does not satisfy the assumptions as well as we had hoped. I think we can still sort of use it as a benchmark against our main multinomial logistic regression model, but be careful when analysing it's results.
+
+# Ordinal Logistic Regression
+
+Another thing we can try once more is ordinal logistic regression, at least to check if the proportional odds assumption is satisfied in this new data set.
+
+```{r}
+# Fit ordinal models
+ALT.ordinal = polr(formula = ALT3 ~ ExerciseGuidelines + Sex + AlcoholRisk + 
+    SmokingDuration + NonSchoolQuals + IncomeDecile + Age + Waist, 
+    data = dat.full, Hess = TRUE)
+
+GGT.ordinal = polr(formula = GGT3 ~ ExerciseGuidelines + Sex + AlcoholRisk + 
+    SmokingDuration + NonSchoolQuals + IncomeDecile + Age + Waist, 
+    data = dat.full, Hess = TRUE)
+
+tidy(ALT.ordinal) %>% kable(caption = "ALT Ordinal Logistic Regression Summary",
+                            digits = 4, align = "ccccc")
+tidy(GGT.ordinal) %>% kable(caption = "GGT Ordinal Logistic Regression Summary",
+                            digits = 4, align = "ccccc")
+```
+
+We see that the test statistic for `ExerciseGuidelines` under ALT is small while under GGT is large, again agreeing with our previous results on significance. Next, we use the Brant test and check AICs as well to see how much "better" the ordinal models would have been regardless of whether they satisfy their main assumption or not.
+
+```{r results = "hide"}
+# Brant test
+a1 = brant(ALT.ordinal)["Omnibus", ]
+a2 = brant(GGT.ordinal)["Omnibus", ]
+res = rbind(a1, a2)
+rownames(res) = c("ALT", "GGT")
+res %>% kable(caption = "Brant Omnibus test for ALT and GGT",
+              align = "ccc")
+```
+
+```{r}
+# AIC tables
+AIC(ALT.multinom, ALT.ordinal) %>% 
+  kable(caption = "AIC of ALT Models", align = "cc")
+AIC(GGT.multinom, GGT.ordinal) %>% 
+  kable(caption = "AIC of GGT Models", align = "cc")
+
+# BIC tables as well
+BIC(ALT.multinom, ALT.ordinal) %>% 
+  kable(caption = "BIC of ALT Models", align = "cc")
+BIC(GGT.multinom, GGT.ordinal) %>% 
+  kable(caption = "BIC of GGT Models", align = "cc")
+```
+
+The Brant test tells us that the POA is still violated, so we should not use this model. Hence, the main model remains the multinomial logistic regression model, but the benefit of all the previous analysis is that the model results are quite robust in that `ExerciseGuidelines` does not have a significant association with ALT, but it does with GGT across all our different models.
+
+# Summary
+
+The bottom line for the rework is that physical activity showed little evidence of an adjusted association with ALT, but consistently showed an association with GGT, suggesting that the two liver biomarkers may capture different aspects of the relationship between lifestyle behaviours and liver health.
+
+My next step would be to remake the causal inference DAGs to add all the new confounders, and I think that may be enough for now. I may do decision trees and random forests as well, since we have clearly seen a non-linear relationship for ALT and GGT.

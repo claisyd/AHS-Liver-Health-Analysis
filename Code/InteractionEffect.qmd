@@ -1,0 +1,127 @@
+---
+title: "STAT3888: Full Population Interaction Model"
+author: "Calvin Lai"
+date: today
+format:
+  html:
+    theme: cosmo
+    code-fold: show
+    highlight-style: github
+    embed-resources: true
+---
+
+```{r include = F}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, 
+                      fig.align='center', fig.dim=c(10, 8))
+
+library(tidyverse)
+library(here)
+library(knitr)
+library(nnet)
+library(stargazer)
+library(broom)
+library(pscl)
+library(lmtest)
+```
+
+This document will try to implement one idea I had a bit ago, which was to use the full population data set and introduce interaction effects between `EXREGUIC` and the alcohol and smoking filtering variables, instead of directly filtering on them. In particular, we define the variable $$H=\begin{cases}1,&\text{if smoker and medium/high risk alcohol consumer}\\ 0,&\text{otherwise}\end{cases}$$and fit it and the interaction with `EXREGUIC` alongside it as well, on our usual multinomial logistic regression model, to see if association between physical activity and ALT/GGT is different in the high-risk population.
+
+# Adding $H$ to the Dataset
+
+Recall that we filtered based on `AL2K7DAY %in% c("Medium risk", "High risk")` and `SMKAGEDB != "Never smoked daily"`; we also filtered on age being >18 but that is already done in our `fdat.full`.
+
+```{r}
+# Load dataset and models
+fdat.full = readRDS(here("Objects", "fdat_full.rds"))
+alt.fmlr = readRDS(here("Objects", "Full_data_MLR_ALT3.rds"))
+ggt.fmlr = readRDS(here("Objects", "Full_data_MLR_GGT3.rds"))
+
+# Then introducing H Filter
+fdat.full.h = fdat.full %>% 
+  mutate(H = case_when(
+    is.na(AL2K7DAY) | is.na(SMKAGEDB) ~ NA,
+    AL2K7DAY %in% c("Medium risk", "High risk") & 
+      SMKAGEDB != "Never smoked daily" ~ 1,
+    .default = 0))
+
+# Proportions of H
+table(fdat.full.h$H)
+```
+
+The proportion of $H=1$ coincides with the number of rows in our restricted `pdat.full`, so it seems that the implementation was alright.
+
+# Model Fitting
+
+We fit the new models first, check convergence, AIC, and deviance, the overall fits and significance for the main variables `EXREGUIC` and `H`.
+
+```{r}
+# ALT Interaction fit
+alt.int = multinom(ALT3 ~ EXREGUIC * H + AGEB + SEX + WAIST + DSMKHHRB, 
+    data = fdat.full.h, Hess = TRUE)
+
+# GGT Interaction fit
+ggt.int = multinom(GGT3 ~ EXREGUIC * H + AGEB + SEX + WAIST + DSMKHHRB, 
+    data = fdat.full.h, Hess = TRUE)
+
+# Convergence, AIC, Deviance
+conv = c(alt.int$convergence, ggt.int$convergence)
+conv.log = (conv == 0)
+models = c("ALT Interaction", "GGT Interaction")
+aic = c(alt.int$AIC, ggt.int$AIC)
+deviance = c(alt.int$deviance, ggt.int$deviance)
+models.df = data.frame("Model" = models, "Convergence" = conv.log,
+                       "AIC" = aic, "Deviance" = deviance)
+kable(models.df, align = "cccc")
+
+# Model summaries (for now, just EXREGUIC and H)
+tidy(alt.int)[c(2, 3, 24, 26, 27, 48), ] %>% 
+  kable(caption = "ALT Interaction Effects", digits = 4, align = "cccccc",
+        col.names = c("ALT Level", "Term", "Coefficient", "SE", "t-score", "p-value"))
+
+tidy(ggt.int)[c(2, 3, 24, 26, 27, 48), ] %>% 
+  kable(caption = "GGT Interaction Effects", digits = 4, align = "cccccc",
+        col.names = c("GGT Level", "Term", "Coefficient", "SE", "t-score", "p-value"))
+```
+
+# Model Comparison
+
+We just conduct some simple model comparison tests and metrics, like likelihood ratio, AIC, and BIC, and the pseudo-$R^2$ via `pscl::pR2`.
+
+```{r}
+# Likelihood Ratio Test (we need to refit the MLR models using the same set)
+# These should be identical though; but for some reason I am getting a bug
+# so I will further make the data set only complete cases
+fdat.full.hc = fdat.full.h %>% drop_na()
+alt.fmlr2 = multinom(formula = ALT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, 
+    data = fdat.full.hc, Hess = TRUE, na.action = "na.omit")
+lrtest(alt.fmlr2, alt.int)
+ggt.fmlr2 = multinom(formula = GGT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, 
+    data = fdat.full.hc, Hess = TRUE, na.action = "na.omit")
+lrtest(ggt.fmlr2, ggt.int)
+
+# AIC and BIC
+data.frame(Model = c("ALT", "ALT With Interaction",
+                     "GGT", "GGT With Interaction"),
+           AIC = AIC(alt.fmlr2, alt.int, ggt.fmlr2, ggt.int)$AIC,
+           BIC = BIC(alt.fmlr2, alt.int, ggt.fmlr2, ggt.int)$BIC) %>% 
+  kable(caption = "AIC and BIC of Models", align = "ccc", digits = 4)
+
+# Pseudo R^2 approximates proportion of variance explained
+# like R2 but for categorical variables. Use McFadden (higher is better)
+mcfadden = data.frame(
+  Model_Name = c("ALT", "ALT with Interaction", "GGT", "GGT with Interaction"),
+  McFadden = round(c(
+    pR2(alt.fmlr2)["McFadden"],
+    pR2(alt.int)["McFadden"],
+    pR2(ggt.fmlr2)["McFadden"],
+    pR2(ggt.int)["McFadden"]
+  ), 4)
+)
+row.names(mcfadden) = NULL
+
+# 2. View the clean table in your console
+kable(mcfadden, caption = "McFadden R^2 for Models (Higher is better)",
+      align = "cc", col.names = c("Model", "McFadden"))
+```
+
+We see overall based on the traditional model comparison metrics, the interaction models are overall "better", at least compared to the full model. All four models explain a modest but definitive proportion of the outcome variability, with the interaction models offering a better statistical fit, particularly for `GGT`, which saw the largest relative improvement.

@@ -1,0 +1,320 @@
+---
+title: "STAT3888: Nonlinear Relationships Analysis"
+author: "Calvin Lai"
+date: today
+format:
+  html:
+    theme: cosmo
+    code-fold: show
+    highlight-style: github
+    embed-resources: true
+---
+
+To determine if there are possible nonlinear relationships, we will consider fitting *decision trees* and *random forests*. These are mostly meant to be supplementary analysis and likely will not completely replace our multinomial logistic regression as the main model for association and inference.
+
+As for generalised additive models, we may not want to use them for now since all our variables are categorical anyway so there really isn't anything to smooth.
+
+```{r include = F}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, 
+                      fig.align='center', fig.dim=c(10, 8))
+
+library(tidyverse)
+library(here)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(caret)
+library(mgcv)
+library(knitr)
+library(pdp)
+```
+
+# Classification Decision Tree
+
+To start the tree analysis, we use a simple decision tree using `rpart`. We will mostly just use the full data set for now.
+
+```{r}
+# Load data set
+fdat.full = readRDS(here("Objects", "fdat_full.rds")) %>% drop_na()
+
+# Decision tree fit for ALT; need cp very small for something interesting...
+res.alt = rpart(ALT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, data = fdat.full,
+            control = rpart.control(cp = 0))
+res.alt
+printcp(res.alt)
+res.alt.pruned = prune(res.alt, cp = 0.00081433)
+
+# Plot
+rpart.plot(res.alt.pruned, box.palette = "Greens", type = 2, fallen.leaves = T,
+           tweak = 1.2, main = "ALT Decision Tree")
+```
+
+```{r}
+# Decision tree fit for GGT
+res.ggt = rpart(GGT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, data = fdat.full,
+            control = rpart.control(cp = 0))
+res.ggt
+printcp(res.ggt) # tells us which gives smallest xerror
+res.ggt.pruned = prune(res.ggt, cp = 0.00043029)
+
+# Plot
+rpart.plot(res.ggt.pruned, box.palette = "Greens", type = 2, fallen.leaves = T,
+           tweak = 1.2, main = "GGT Decision Tree")
+```
+
+## Cross-Validation
+
+```{r}
+# ALT CV
+set.seed(3888)
+ctrl = trainControl(method = "repeatedcv", number = 10, repeats = 3, 
+                    savePredictions = "final")
+tree.cv.alt = train(ALT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB,
+                    data = fdat.full, method = "rpart", trControl = ctrl,
+                    tuneLength = 15, metric = "Accuracy")
+tree.cv.alt
+tree.cv.alt$bestTune
+tree.cv.alt$results
+plot(tree.cv.alt)
+confusionMatrix(tree.cv.alt$pred$pred, tree.cv.alt$pred$obs)
+```
+
+```{r}
+# ALT CV
+set.seed(3888)
+ctrl = trainControl(method = "repeatedcv", number = 10, repeats = 3,
+                    savePredictions = "final")
+tree.cv.ggt = train(GGT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB,
+                    data = fdat.full, method = "rpart", trControl = ctrl,
+                    tuneLength = 15, metric = "Accuracy")
+tree.cv.ggt
+tree.cv.ggt$bestTune
+tree.cv.ggt$results
+plot(tree.cv.ggt)
+confusionMatrix(tree.cv.ggt$pred$pred, tree.cv.ggt$pred$obs)
+```
+
+However, trying to fit the final trees yields just one node, so I am not really sure if there is something wrong with the code or not. Essentially, it just classified everything as `Low`. So that could explain the respectable accuracy but terrible sensitivity for `Borderline`/`High`, at least for GGT. We also output the variable importance for the original pruned trees as well.
+
+```{r}
+# Final CV Trees
+rpart.plot(tree.cv.alt$finalModel, box.palette = "Greens", 
+           type = 2, fallen.leaves = TRUE, tweak = 1.2, 
+           main = "ALT Final CV Decision Tree")
+rpart.plot(tree.cv.ggt$finalModel, box.palette = "Greens", 
+           type = 2, fallen.leaves = TRUE, tweak = 1.2, 
+           main = "GGT Final CV Decision Tree")
+
+# Original pruned trees variable importance
+alt.vi = res.alt.pruned$variable.importance %>% as.data.frame()
+colnames(alt.vi) = "Mean Decrease in Impurity"
+ggt.vi = res.ggt.pruned$variable.importance %>% as.data.frame()
+colnames(ggt.vi) = "Mean Decrease in Impurity"
+kable(alt.vi, caption = "ALT Tree", digits = 3, align = "c")
+kable(ggt.vi, caption = "GGT Tree", digits = 3, align = "c")
+```
+
+# Random Forests
+
+We first start by fitting the random forest using the default `mtry`, which is 2 in our case.
+
+```{r}
+set.seed(3858)
+# ALT
+alt.rf = randomForest(ALT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, 
+                      data = fdat.full,
+                      importance = TRUE)
+alt.rf
+alt.class.error = 1 - confusionMatrix(fdat.full$ALT3, 
+                                      predict(alt.rf, newdata = fdat.full, 
+                                              type = "class"))$byClass[,"Recall"]
+alt.class.error
+alt.rf$importance
+varImpPlot(alt.rf)
+
+# GGT
+ggt.rf = randomForest(GGT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, 
+                      data = fdat.full,
+                      importance = TRUE)
+ggt.rf
+ggt.class.error = 1 - confusionMatrix(fdat.full$GGT3, 
+                                      predict(ggt.rf, newdata = fdat.full, 
+                                              type = "class"))$byClass[,"Recall"]
+ggt.class.error
+ggt.rf$importance
+varImpPlot(ggt.rf)
+```
+
+Next, we do cross-validation to determine the best `mtry`.
+
+```{r}
+set.seed(3888)
+
+# ALT
+ctrl = trainControl(method = "cv", number = 10, savePredictions = "final")
+if (file.exists(here("Objects", "alt_rf_train.rds"))) {
+  
+  alt.cv.rf = readRDS(here("Objects", "alt_rf_train.rds"))
+  
+} else {
+  
+  alt.cv.rf = train(ALT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, 
+                  data = fdat.full, method = "rf", trControl = ctrl, 
+                  tuneGrid = expand.grid(mtry = 1:5), ntree = 500,
+                  importance = TRUE, metric = "Accuracy")
+  saveRDS(alt.cv.rf, here("Objects", "alt_rf_train.rds"))
+  
+}
+# CV tuning results
+alt.cv.rf$results
+alt.cv.rf$bestTune
+plot(alt.cv.rf)
+confusionMatrix(alt.cv.rf$pred$pred, alt.cv.rf$pred$obs)
+varImp(alt.cv.rf)
+```
+
+```{r}
+# GGT
+set.seed(3888)
+ctrl = trainControl(method = "cv", number = 10, savePredictions = "final")
+if (file.exists(here("Objects", "ggt_rf_train.rds"))) {
+  
+  ggt.cv.rf = readRDS(here("Objects", "ggt_rf_train.rds"))
+  
+} else {
+  
+  ggt.cv.rf = train(GGT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, 
+                  data = fdat.full, method = "rf", trControl = ctrl, 
+                  tuneGrid = expand.grid(mtry = 1:5), ntree = 500,
+                  importance = TRUE, metric = "Accuracy")
+  saveRDS(ggt.cv.rf, here("Objects", "ggt_rf_train.rds"))
+  
+}
+# CV tuning results
+ggt.cv.rf$results
+ggt.cv.rf$bestTune
+plot(ggt.cv.rf)
+confusionMatrix(ggt.cv.rf$pred$pred, ggt.cv.rf$pred$obs)
+varImp(ggt.cv.rf)
+```
+
+The sensitivities overall say the same story as with decision trees, as it seems `Low` is heavily preferred in both cases especially for GGT.
+
+## Partial Dependence Plots
+
+We see the partial plots against `High` for each variable for now (a quick analysis showed that `Borderline` plots are roughly similar, but for brevity I will leave them off). We can expand to more higher-dimensional partial plots later on but for a quick analysis this should be enough to determine if there are nonlinear relationships at play here...
+
+```{r}
+# Using default RF mtry = 2; do for each variable
+pdp.age.alt = partial(alt.rf, pred.var = "AGEB", train = fdat.full,
+                      which.class = "High", prob = TRUE)
+plotPartial(pdp.age.alt,
+            main = "Partial Dependence of High ALT on Age", xlab = "Age",
+            ylab = "Partial Dependence")
+
+pdp.sex.alt = partial(alt.rf, pred.var = "SEX", train = fdat.full,
+                      which.class = "High", prob = TRUE)
+plotPartial(pdp.sex.alt,
+            main = "Partial Dependence of High ALT on Sex", xlab = "Sex",
+            ylab = "Partial Dependence")
+
+pdp.waist.alt = partial(alt.rf, pred.var = "WAIST", train = fdat.full,
+                      which.class = "High", prob = TRUE)
+plotPartial(pdp.waist.alt,
+            main = "Partial Dependence of High ALT on Waist", xlab = "Waist",
+            ylab = "Partial Dependence")
+
+pdp.exercise.alt = partial(alt.rf, pred.var = "EXREGUIC", train = fdat.full,
+                      which.class = "High", prob = TRUE)
+plotPartial(pdp.exercise.alt,
+            main = "Partial Dependence of High ALT on EXREGUIC", xlab = "EXREGUIC",
+            ylab = "Partial Dependence")
+
+pdp.smoking.alt = partial(alt.rf, pred.var = "DSMKHHRB", train = fdat.full,
+                      which.class = "High", prob = TRUE)
+plotPartial(pdp.smoking.alt,
+            main = "Partial Dependence of High ALT on DSMKHHRB", xlab = "DSMKHHRB",
+            ylab = "Partial Dependence")
+```
+
+Perhaps, we can do it with `EXREGUIC` and one of the variables, each time.
+
+```{r}
+# Contour plots
+pdp.ex.waist.alt = partial(alt.rf, pred.var = c("WAIST", "EXREGUIC"),
+                           train = fdat.full, which.class = "High", prob = TRUE)
+plotPartial(pdp.ex.waist.alt, contour = TRUE, 
+            main = "Partial Dependence of High ALT on EXREGUIC and Waist")
+
+pdp.ex.age.alt = partial(alt.rf, pred.var = c("AGEB", "EXREGUIC"),
+                           train = fdat.full, which.class = "High", prob = TRUE)
+plotPartial(pdp.ex.age.alt, contour = TRUE, 
+            main = "Partial Dependence of High ALT on EXREGUIC and Age")
+
+pdp.ex.sex.alt = partial(alt.rf, pred.var = c("SEX", "EXREGUIC"),
+                           train = fdat.full, which.class = "High", prob = TRUE)
+plotPartial(pdp.ex.sex.alt, contour = TRUE, 
+            main = "Partial Dependence of High ALT on EXREGUIC and Sex")
+
+pdp.ex.smoking.alt = partial(alt.rf, pred.var = c("DSMKHHRB", "EXREGUIC"),
+                           train = fdat.full, which.class = "High", prob = TRUE)
+plotPartial(pdp.ex.smoking.alt, contour = TRUE, 
+            main = "Partial Dependence of High ALT on EXREGUIC and DSMKHHRB")
+```
+
+Finally, we do the same for GGT as well.
+
+```{r}
+# Using default RF mtry = 2; do for each variable
+pdp.age.ggt = partial(ggt.rf, pred.var = "AGEB", train = fdat.full,
+                      which.class = "High", prob = TRUE)
+plotPartial(pdp.age.ggt,
+            main = "Partial Dependence of High GGT on Age", xlab = "Age",
+            ylab = "Partial Dependence")
+
+pdp.sex.ggt = partial(ggt.rf, pred.var = "SEX", train = fdat.full,
+                      which.class = "High", prob = TRUE)
+plotPartial(pdp.sex.ggt,
+            main = "Partial Dependence of High GGT on Sex", xlab = "Sex",
+            ylab = "Partial Dependence")
+
+pdp.waist.ggt = partial(ggt.rf, pred.var = "WAIST", train = fdat.full,
+                      which.class = "High", prob = TRUE)
+plotPartial(pdp.waist.ggt,
+            main = "Partial Dependence of High GGT on Waist", xlab = "Waist",
+            ylab = "Partial Dependence")
+
+pdp.exercise.ggt = partial(ggt.rf, pred.var = "EXREGUIC", train = fdat.full,
+                      which.class = "High", prob = TRUE)
+plotPartial(pdp.exercise.ggt,
+            main = "Partial Dependence of High GGT on EXREGUIC", xlab = "EXREGUIC",
+            ylab = "Partial Dependence")
+
+pdp.smoking.ggt = partial(ggt.rf, pred.var = "DSMKHHRB", train = fdat.full,
+                      which.class = "High", prob = TRUE)
+plotPartial(pdp.smoking.ggt,
+            main = "Partial Dependence of High GGT on DSMKHHRB", xlab = "DSMKHHRB",
+            ylab = "Partial Dependence")
+
+# Contour plots
+pdp.ex.waist.ggt = partial(ggt.rf, pred.var = c("WAIST", "EXREGUIC"),
+                           train = fdat.full, which.class = "High", prob = TRUE)
+plotPartial(pdp.ex.waist.ggt, contour = TRUE, 
+            main = "Partial Dependence of High GGT on EXREGUIC and Waist")
+
+pdp.ex.age.ggt = partial(ggt.rf, pred.var = c("AGEB", "EXREGUIC"),
+                           train = fdat.full, which.class = "High", prob = TRUE)
+plotPartial(pdp.ex.age.ggt, contour = TRUE, 
+            main = "Partial Dependence of High GGT on EXREGUIC and Age")
+
+pdp.ex.sex.ggt = partial(ggt.rf, pred.var = c("SEX", "EXREGUIC"),
+                           train = fdat.full, which.class = "High", prob = TRUE)
+plotPartial(pdp.ex.sex.ggt, contour = TRUE, 
+            main = "Partial Dependence of High GGT on EXREGUIC and Sex")
+
+pdp.ex.smoking.ggt = partial(ggt.rf, pred.var = c("DSMKHHRB", "EXREGUIC"),
+                           train = fdat.full, which.class = "High", prob = TRUE)
+plotPartial(pdp.ex.smoking.ggt, contour = TRUE, 
+            main = "Partial Dependence of High GGT on EXREGUIC and DSMKHHRB")
+```
+

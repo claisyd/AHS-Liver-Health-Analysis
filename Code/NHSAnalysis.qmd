@@ -1,0 +1,2192 @@
+---
+title: "STAT3888: NHS Data Cleaning"
+author: "Calvin Lai"
+date: today
+format:
+  html:
+    theme: cosmo
+    code-fold: show
+    highlight-style: github
+    embed-resources: true
+---
+
+```{r include = F}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, 
+                      fig.align='center', fig.dim=c(10, 8))
+library(here)
+library(readxl)
+library(tidyverse)
+library(janitor)
+library(broom)
+library(knitr)
+library(visdat)
+library(DT)
+library(patchwork)
+library(readr)
+library(naniar)
+library(GGally)
+```
+
+This document will aim to analyse the NHS data sets. We will try to do it for one data set and see if we can generalise/automate the process. We start with `AHSnhs11b14.csv`.
+
+# `AHSnhs11b14.csv` Data Set
+
+We take the non-ID related columns, which are `TOTPALCR`, `TOTALCC`, `ALCSDCDT`, `ALCORD` and `ALCTYPT`, and turn the placeholder missing values into `NA` based on the metadata descriptions. Note that some patients have more than one entry here, as we will also count the total number of unique IDs.
+
+```{r}
+# Data Cleaning
+nhs1 = read_csv(here("NHS", "AHSnhs11b14.csv"))
+counts = c(dim(nhs1)[1], n_distinct(nhs1$ABSLID))
+cat("Total =", counts[1], "\nUnique =", counts[2])
+
+nhs1.data = nhs1 %>% select(ABSLID:ALCTYPT) %>% 
+  mutate(TOTPALCR = case_when(TOTPALCR %in% c(0, 999998) ~ NA,
+                              TRUE ~ TOTPALCR),
+         TOTALCC = case_when(TOTALCC %in% c(0, 999998) ~ NA,
+                             TRUE ~ TOTALCC),
+         ALCSDCDT = case_when(ALCSDCDT == 99 ~ NA, 
+                              ALCSDCDT == 98 ~ NA, 
+                              TRUE ~ ALCSDCDT),
+         ALCORD = case_when(ALCORD == 0 ~ NA,
+                            ALCORD == 1 ~ "Most recent",
+                            ALCORD == 2 ~ "Second most recent",
+                            ALCORD == 3 ~ "Third most recent") %>% as.factor(),
+         ALCTYPT = case_when(ALCTYPT == 0 ~ NA,
+                             ALCTYPT == 1 ~ "Low alcohol beer",
+                             ALCTYPT == 2 ~ "Mid strength beer",
+                             ALCTYPT == 3 ~ "Full strength beer",
+                             ALCTYPT == 4 ~ "White wine",
+                             ALCTYPT == 5 ~ "Red wine",
+                             ALCTYPT == 6 ~ "Low alcohol wine",
+                             ALCTYPT == 7 ~ "Champagne/sparkling wine",
+                             ALCTYPT == 8 ~ "Ready to drink spirits/liqueurs",
+                             ALCTYPT == 9 ~ "Liqueurs",
+                             ALCTYPT == 10 ~ "Spirits",
+                             ALCTYPT == 11 ~ "Fortified wine",
+                             ALCTYPT == 12 ~ "Cider",
+                             ALCTYPT == 13 ~ "Cocktail",
+                             ALCTYPT == 14 ~ "Other") %>% as.factor())
+
+# Visualise Missing Data
+gg_miss_var(nhs1.data)
+
+# Summary Statistics
+summary(nhs1.data)
+
+# Visual Summaries
+nhs1_long = nhs1.data %>%
+  pivot_longer(cols = c(TOTPALCR, ALCSDCDT, TOTALCC), 
+               names_to = "Variable",
+               values_to = "Value")
+ggplot(nhs1_long, aes(x = Value)) +
+  geom_histogram(fill = "#69b3a2", color = "#e9ecef", alpha = 0.9) +
+  labs(y = "Frequency", title = "Distribution of Alcohol Metrics", x = "Value") +
+  theme_linedraw() +
+  facet_wrap(~ Variable, scales = "free")
+
+# Tabular Summaries
+table(nhs1.data$ALCORD)
+table(nhs1.data$ALCTYPT)
+
+# Bivariate Analysis
+nhs1.data.numeric = nhs1.data %>% select(TOTPALCR:ALCSDCDT)
+ggpairs(nhs1.data.numeric, title = "Pairs Plot of AHSbhs11b14 Data Set")
+```
+
+It seems that they are quite highly correlated, as also seen in the histogram having similar distributions.
+
+------------------------------------------------------------------------
+
+# `AHSnhs11ba3.csv` Data Set
+
+We will do the same analysis as above, and potentially here we can check relationships between the numeric and categorical variables as well.
+
+```{r}
+# Data Cleaning
+nhs2 = read_csv(here("NHS", "AHSnhs11ba3.csv"))
+counts = c(dim(nhs2)[1], n_distinct(nhs2$ABSLID))
+cat("Total =", counts[1], "\nUnique =", counts[2])
+nhs2.data = nhs2 %>% select(ABSLID:DAY3ALC) %>% 
+  mutate(TOTPA3CR = case_when(TOTPA3CR %in% c(0, 999998) ~ NA,
+                              TRUE ~ TOTPA3CR),
+         ALCORD = case_when(ALCORD == 0 ~ NA,
+                            ALCORD == 1 ~ "Most recent",
+                            ALCORD == 2 ~ "Second most recent",
+                            ALCORD == 3 ~ "Third most recent") %>% as.factor(),
+         DAY3ALC = case_when(DAY3ALC == 0 ~ NA,
+                             DAY3ALC == 1 ~ "Monday",
+                             DAY3ALC == 2 ~ "Tuesday",
+                             DAY3ALC == 3 ~ "Wednesday",
+                             DAY3ALC == 4 ~ "Thursday",
+                             DAY3ALC == 5 ~ "Friday",
+                             DAY3ALC == 6 ~ "Saturday",
+                             DAY3ALC == 7 ~ "Sunday") %>% as.factor())
+
+# Visualise Missing Data
+gg_miss_var(nhs2.data)
+
+# Summary Statistics
+summary(nhs2.data)
+
+# Visual Summary
+ggplot(nhs2.data, aes(x = TOTPA3CR)) + 
+  geom_histogram(fill = "#69b3a2", color = "#e9ecef", alpha = 0.9) +
+  labs(y = "Frequency", title = "Distribution of TOTPA3CR", 
+       x = "Pure Alcohol Consumption (ml)") +
+  theme_linedraw()
+
+data_b1 = nhs2.data %>% filter(!is.na(ALCORD))
+data_b2 = nhs2.data %>% filter(!is.na(DAY3ALC))
+
+b1 = ggplot(data_b1, aes(x = ALCORD, y = TOTPA3CR, fill = ALCORD)) +
+  geom_boxplot(show.legend = FALSE) +
+  labs(title = "Pure Alcohol Consumption by Order", 
+       x = "Alcohol Order", y = "TOTPA3CR") +
+  theme_linedraw() + scale_fill_brewer(palette = "Set2")
+b2 = ggplot(data_b2, aes(x = DAY3ALC, y = TOTPA3CR, fill = DAY3ALC)) +
+  geom_boxplot(show.legend = FALSE) +
+  labs(title = "Pure Alcohol Consumption by Day", x = "Day", y = "TOTPA3CR") +
+  theme_linedraw() + scale_fill_brewer(palette = "Set2")
+b1 + b2
+
+# Tabular Summaries
+table(nhs2.data$ALCORD)
+table(nhs2.data$DAY3ALC)
+table(nhs2.data$ALCORD, nhs2.data$DAY3ALC)
+```
+
+----
+
+# `AHSnhs11bac.csv` Data Set
+
+For this data set, we have multiple responses for some variables, so we will try to combine those variables into one that contains a list of them instead. In this case, we also turn the "Not Applicable" values to `NA` as well, but this can be changed if needed.
+
+```{r}
+# Data Cleaning
+nhs3 = read_csv(here("NHS", "AHSnhs11bac.csv"))
+counts = c(dim(nhs3)[1], n_distinct(nhs3$ABSLID))
+cat("Total =", counts[1], "\nUnique =", counts[2])
+nhs3.data = nhs3 %>% select(ABSLID:ACTFLG) %>% 
+  mutate(DAYOFFSC = case_when(DAYOFFSC %in% c(8, 9) ~ NA,
+                              TRUE ~ DAYOFFSC),
+         DAYOFFWC = case_when(DAYOFFWC %in% c(8, 9) ~ NA,
+                              TRUE ~ DAYOFFWC),
+         TIMEGPC = case_when(TIMEGPC %in% c(96, 97, 98, 99) ~ NA,
+                             TRUE ~ TIMEGPC),
+         TIMESPC = case_when(TIMESPC %in% c(96, 97, 98, 99) ~ NA,
+                             TRUE ~ TIMESPC),
+         ACT2WKSA = case_when(ACT2WKSA %in% c(96, 97, 98, 99) ~ NA,
+                              TRUE ~ ACT2WKSA),
+         ACT2WKS = pmap(list(ACT2WKSA, ACT2WKSB, ACT2WKSC, ACT2WKSD, 
+                             ACT2WKSE, ACT2WKSF, ACT2WKSG), function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                              }),
+         ACTGP12M = case_when(ACTGP12M %in% c(0, 6, 8) ~ NA,
+                              ACTGP12M == 1 ~ "Consulted",
+                              ACTGP12M == 5 ~ "Did Not Consult"),
+         ACTSP12M = case_when(ACTSP12M %in% c(0, 6, 8) ~ NA,
+                              ACTSP12M == 1 ~ "Consulted",
+                              ACTSP12M == 5 ~ "Did Not Consult"),
+         ACTWOHPA = case_when(ACTWOHPA %in% c(96, 97, 98, 99) ~ NA,
+                              TRUE ~ ACTWOHPA),
+         ACTWOHP = pmap(list(ACTWOHPA, ACTWOHPB, ACTWOHPC, ACTWOHPD, ACTWOHPE,
+                             ACTWOHPF, ACTWOHPG, ACTWOHPH, ACTWOHPI, ACTWOHPJ,
+                             ACTWOHPK, ACTWOHPL, ACTWOHPM, ACTWOHPN, ACTWOHPO,
+                             ACTWOHPP), function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             }),
+         DAYSOFF = case_when(DAYSOFF %in% c(0, 8) ~ NA,
+                             DAYSOFF == 1 ~ "Yes",
+                             DAYSOFF == 5 ~ "No"),
+         VISITOHP = case_when(VISITOHP %in% c(0, 6, 8) ~ NA,
+                              VISITOHP == 1 ~ "Consulted",
+                              VISITOHP == 5 ~ "Did Not Consult"),
+         NHPACONS = case_when(NHPACONS %in% c(0, 6, 8) ~ NA,
+                              NHPACONS == 1 ~ "Consulted",
+                              NHPACONS == 5 ~ "Did Not Consult"),
+         ACTQ12 = case_when(ACTQ12 %in% c(0, 8) ~ NA,
+                             ACTQ12 == 1 ~ "Yes",
+                             ACTQ12 == 5 ~ "No"),
+         ACTQ15 = case_when(ACTQ15 %in% c(0, 8) ~ NA,
+                             ACTQ15 == 1 ~ "Yes",
+                             ACTQ15 == 5 ~ "No"),
+         CONNUMC = as.factor(CONNUMC),
+         ACTFLG = as.factor(ACTFLG)) %>% 
+  select(-c(LEVEL6, ACTWOHPA, ACTWOHPB, ACTWOHPC, ACTWOHPD, ACTWOHPE,
+            ACTWOHPF, ACTWOHPG, ACTWOHPH, ACTWOHPI, ACTWOHPJ,
+            ACTWOHPK, ACTWOHPL, ACTWOHPM, ACTWOHPN, ACTWOHPO, 
+            ACTWOHPP, ACT2WKSA, ACT2WKSB, ACT2WKSC, ACT2WKSD, 
+            ACT2WKSE, ACT2WKSF, ACT2WKSG))
+
+# Visualise Missing Data
+gg_miss_var(nhs3.data)
+
+# Summary Statistics
+table(nhs3.data$ACTGP12M)
+table(nhs3.data$ACTSP12M)
+table(nhs3.data$DAYSOFF)
+table(nhs3.data$VISITOHP)
+table(nhs3.data$NHPACONS)
+table(nhs3.data$ACTQ12)
+table(nhs3.data$ACTQ15)
+table(nhs3.data$CONNUMC)
+table(nhs3.data$ACTFLG)
+
+# Visual Summaries
+nhs3.data.numeric = nhs3.data %>% select(c(DAYOFFSC, DAYOFFWC, TIMEGPC, TIMESPC))
+ggpairs(nhs3.data.numeric, title = "Pairs Plot of AHSbhs11bac Data Set")
+
+# Boxplot against CONNUMC (condition type)
+b1 = ggplot(nhs3.data, aes(x = CONNUMC, y = DAYOFFSC, fill = CONNUMC)) +
+  geom_boxplot(show.legend = FALSE) +
+  labs(title = "Days off School per Condition", 
+       x = "Condition Number", y = "DAYOFFSC") +
+  theme_linedraw() + scale_fill_brewer(palette = "Set2")
+b2 = ggplot(nhs3.data, aes(x = CONNUMC, y = DAYOFFWC, fill = CONNUMC)) +
+  geom_boxplot(show.legend = FALSE) +
+  labs(title = "Days off Work per Condition", 
+       x = "Condition Number", y = "DAYOFFWC") +
+  theme_linedraw() + scale_fill_brewer(palette = "Set2")
+b3 = ggplot(nhs3.data, aes(x = CONNUMC, y = TIMEGPC, fill = CONNUMC)) +
+  geom_boxplot(show.legend = FALSE) +
+  labs(title = "GP Consultations per Condition", 
+       x = "Condition Number", y = "TIMEGPC") +
+  theme_linedraw() + scale_fill_brewer(palette = "Set2")
+b4 = ggplot(nhs3.data, aes(x = CONNUMC, y = TIMESPC, fill = CONNUMC)) +
+  geom_boxplot(show.legend = FALSE) +
+  labs(title = "Specialist Consultations per Condition", 
+       x = "Condition Number", y = "TIMESPC") +
+  theme_linedraw() + scale_fill_brewer(palette = "Set2")
+b1 + b2
+b3 + b4
+```
+
+----
+
+# `AHSnhs11bbi.csv` Data Set
+
+We ignore the usual identifier variables, and also the replicate weights. Most of these variables seem to be categorical.
+
+```{r}
+# Data Cleaning
+nhs4 = read_csv(here("NHS", "AHSnhs11bbi.csv"))
+counts = c(dim(nhs4)[1], n_distinct(nhs4$ABSLID))
+cat("Total =", counts[1], "\nUnique =", counts[2])
+nhs4.data = nhs4 %>% select(c(ABSLID:BIORESPC, NHMSPERW:ABSPID)) %>% 
+  mutate(TRIGRESB = case_when(TRIGRESB %in% c(97, 98) ~ NA,
+                              TRIGRESB == 1 ~ "Less than 0.5",
+                              TRIGRESB == 2 ~ "0.5 to less than 1.0",
+                              TRIGRESB == 3 ~ "1.0 to less than 1.5",
+                              TRIGRESB == 4 ~ "1.5 to less than 2.0",
+                              TRIGRESB == 5 ~ "2.0 to less than 2.5",
+                              TRIGRESB == 6 ~ "2.5 to less than 3.0",
+                              TRIGRESB == 7 ~ "3.0 or more") %>% as.factor(),
+         CHOLRESB = case_when(CHOLRESB %in% c(97, 98) ~ NA,
+                              CHOLRESB == 1 ~ "Less than 4.0",
+                              CHOLRESB == 2 ~ "4.0 to less than 4.5",
+                              CHOLRESB == 3 ~ "4.5 to less than 5.0",
+                              CHOLRESB == 4 ~ "5.0 to less than 5.5",
+                              CHOLRESB == 5 ~ "5.5 to less than 6.0",
+                              CHOLRESB == 6 ~ "6.0 to less than 6.5",
+                              CHOLRESB == 7 ~ "6.5 to less than 7.0",
+                              CHOLRESB == 8 ~ "7.0 or more") %>% as.factor(),
+         HDLCHREB = case_when(HDLCHREB %in% c(7, 8) ~ NA,
+                              HDLCHREB == 1 ~ "Less than 1.0",
+                              HDLCHREB == 2 ~ "1.0 to less than 1.3",
+                              HDLCHREB == 3 ~ "1.3 to less than 1.5",
+                              HDLCHREB == 4 ~ "1.5 to less than 2.0",
+                              HDLCHREB == 5 ~ "2.0 to less than 2.5",
+                              HDLCHREB == 6 ~ "2.5 or more") %>% as.factor(),
+         LDLRESB = case_when(LDLRESB %in% c(97, 98) ~ NA,
+                             LDLRESB == 1 ~ "Less than 1.5",
+                             LDLRESB == 2 ~ "1.5 to less than 2.0",
+                             LDLRESB == 3 ~ "2.0 to less than 2.5",
+                             LDLRESB == 4 ~ "2.5 to less than 3.0",
+                             LDLRESB == 5 ~ "3.0 to less than 3.5",
+                             LDLRESB == 6 ~ "3.5 to less than 4.0",
+                             LDLRESB == 7 ~ "4.0 or less than 4.5",
+                             LDLRESB == 8 ~ "4.5 or more") %>% as.factor(),
+         APOBRESB = case_when(APOBRESB %in% c(97, 98) ~ NA,
+                              APOBRESB == 1 ~ "0.7 or less",
+                              APOBRESB == 2 ~ "More than 0.7 to 0.8",
+                              APOBRESB == 3 ~ "More than 0.8 to 0.9",
+                              APOBRESB == 4 ~ "More than 0.9 to 1.0",
+                              APOBRESB == 5 ~ "More than 1.0 to 1.1",
+                              APOBRESB == 6 ~ "More than 1.1 to 1.2",
+                              APOBRESB == 7 ~ "More than 1.2 to 1.3",
+                              APOBRESB == 8 ~ "More than 1.3 to 1.4",
+                              APOBRESB == 9 ~ "More than 1.4") %>% as.factor(),
+         EGFRRESB = case_when(EGFRRESB %in% c(7, 8) ~ NA,
+                              EGFRRESB == 1 ~ "90 or more",
+                              EGFRRESB == 2 ~ "75 to 89",
+                              EGFRRESB == 3 ~ "60 to 74",
+                              EGFRRESB == 4 ~ "45 to 59",
+                              EGFRRESB == 5 ~ "30 to 44",
+                              EGFRRESB == 6 ~ "Less than 30") %>% as.factor(),
+         ALTRESB = case_when(ALTRESB %in% c(97, 98) ~ NA,
+                             ALTRESB == 1 ~ "Less than 10",
+                             ALTRESB == 2 ~ "10 to less than 15",
+                             ALTRESB == 3 ~ "15 to less than 20",
+                             ALTRESB == 4 ~ "20 to less than 25",
+                             ALTRESB == 5 ~ "25 to less than 30",
+                             ALTRESB == 6 ~ "30 to less than 35",
+                             ALTRESB == 7 ~ "35 to less than 40",
+                             ALTRESB == 8 ~ "40 to less than 45",
+                             ALTRESB == 9 ~ "45 to less than 50",
+                             ALTRESB == 10 ~ "More than 50") %>% as.factor(),
+         GGTRESB = case_when(GGTRESB %in% c(97, 98) ~ NA,
+                             GGTRESB == 1 ~ "10 or less",
+                             GGTRESB == 2 ~ "More than 10 to 15",
+                             GGTRESB == 3 ~ "More than 15 to 20",
+                             GGTRESB == 4 ~ "More than 20 to 25",
+                             GGTRESB == 5 ~ "More than 25 to 30",
+                             GGTRESB == 6 ~ "More than 30 to 35",
+                             GGTRESB == 7 ~ "More than 35 to 40",
+                             GGTRESB == 8 ~ "More than 40 to 45",
+                             GGTRESB == 9 ~ "More than 45 to 50",
+                             GGTRESB == 10 ~ "More than 50 to 55",
+                             GGTRESB == 11 ~ "More than 55 to 60",
+                             GGTRESB == 12 ~ "More than 60") %>% as.factor(),
+         FOLATREB = case_when(FOLATREB %in% c(97, 98) ~ NA,
+                              FOLATREB == 1 ~ "Less than 8.0",
+                              FOLATREB == 2 ~ "8.0 to less than 11.0",
+                              FOLATREB == 3 ~ "11.0 to less than 15.0",
+                              FOLATREB == 4 ~ "15.0 to less than 20.0",
+                              FOLATREB == 5 ~ "20.0 to less than 25.0",
+                              FOLATREB == 6 ~ "25.0 to less than 30.0",
+                              FOLATREB == 7 ~ "30.0 to less than 35.0",
+                              FOLATREB == 8 ~ "35.0 to less than 40.0",
+                              FOLATREB == 9 ~ "40.0 to less than 45.0",
+                              FOLATREB == 10 ~ "45.0 or more") %>% as.factor(),
+         B12RESB = case_when(B12RESB %in% c(97, 98) ~ NA,
+                             B12RESB == 1 ~ "Less than 145",
+                             B12RESB == 2 ~ "145 to less than 180",
+                             B12RESB == 3 ~ "180 to less than 220",
+                             B12RESB == 4 ~ "220 to less than 300",
+                             B12RESB == 5 ~ "300 to less than 400",
+                             B12RESB == 6 ~ "400 to less than 500",
+                             B12RESB == 7 ~ "500 to less than 600",
+                             B12RESB == 8 ~ "600 to less than 800",
+                             B12RESB == 9 ~ "800 or more") %>% as.factor(),
+         FERRCRPB = case_when(FERRCRPB %in% c(97, 98) ~ NA,
+                              FERRCRPB == 1 ~ "Less than 12",
+                              FERRCRPB == 2 ~ "12 to less than 15",
+                              FERRCRPB == 3 ~ "15 to less than 20",
+                              FERRCRPB == 4 ~ "20 to less than 30",
+                              FERRCRPB == 5 ~ "30 to less than 50",
+                              FERRCRPB == 6 ~ "50 to less than 150",
+                              FERRCRPB == 7 ~ "150 to less than 200",
+                              FERRCRPB == 8 ~ "200 to less than 300",
+                              FERRCRPB == 9 ~ "300 to less than 500",
+                              FERRCRPB == 10 ~ "500 to less than 750",
+                              FERRCRPB == 11 ~ "750 or more") %>% as.factor,
+         SOLTRREB = case_when(SOLTRREB %in% c(7, 8) ~ NA,
+                              SOLTRREB == 1 ~ "1.5 or less",
+                              SOLTRREB == 2 ~ "More than 1.5 to 2.0",
+                              SOLTRREB == 3 ~ "More than 2.0 to 2.5",
+                              SOLTRREB == 4 ~ "More than 2.5 to 3.0",
+                              SOLTRREB == 5 ~ "More than 3.0 to 4.0",
+                              SOLTRREB == 6 ~ "More than 4.0") %>% as.factor(),
+         HBA1PREB = case_when(HBA1PREB %in% c(7, 8) ~ NA,
+                              HBA1PREB == 1 ~ "Less than 5.0",
+                              HBA1PREB == 2 ~ "5.0 to less than 5.5",
+                              HBA1PREB == 3 ~ "5.5 to less than 6.0",
+                              HBA1PREB == 4 ~ "6.0 to less than 6.5",
+                              HBA1PREB == 5 ~ "6.5 to less than 7.0",
+                              HBA1PREB == 6 ~ "7.0 or more") %>% as.factor(),
+         HBA1MREB = case_when(HBA1MREB %in% c(7, 8) ~ NA,
+                              HBA1MREB == 1 ~ "Less than 36",
+                              HBA1MREB == 2 ~ "36 to less than 39",
+                              HBA1MREB == 3 ~ "39 to less than 42",
+                              HBA1MREB == 4 ~ "42 to less than 45",
+                              HBA1MREB == 5 ~ "45 to less than 48",
+                              HBA1MREB == 6 ~ "48 or more") %>% as.factor(),
+         GLUCFREB = case_when(GLUCFREB %in% c(97, 98) ~ NA,
+                              GLUCFREB == 1 ~ "Less than 4.5",
+                              GLUCFREB == 2 ~ "4.5 to less than 5.0",
+                              GLUCFREB == 3 ~ "5.0 to less than 5.5",
+                              GLUCFREB == 4 ~ "5.5 to less than 6.1",
+                              GLUCFREB == 5 ~ "6.1 to less than 7.0",
+                              GLUCFREB == 6 ~ "7.0 to less than 7.5",
+                              GLUCFREB == 7 ~ "7.5 or more") %>% as.factor(),
+         VDLCMREB = case_when(VDLCMREB %in% c(97, 98) ~ NA,
+                              VDLCMREB == 1 ~ "Less than 20",
+                              VDLCMREB == 2 ~ "20 to less than 30",
+                              VDLCMREB == 3 ~ "30 to less than 40",
+                              VDLCMREB == 4 ~ "40 to less than 50",
+                              VDLCMREB == 5 ~ "50 to less than 60",
+                              VDLCMREB == 6 ~ "60 to less than 70",
+                              VDLCMREB == 7 ~ "70 to less than 80",
+                              VDLCMREB == 8 ~ "80 to less than 90",
+                              VDLCMREB == 9 ~ "90 to less than 100",
+                              VDLCMREB == 10 ~ "100 to less than 110",
+                              VDLCMREB == 11 ~ "110 to less than 120",
+                              VDLCMREB == 12 ~ "120 to less than 130",
+                              VDLCMREB == 13 ~ "130 or more") %>% as.factor(),
+         DIAHBRSK = case_when(DIAHBRSK %in% c(0, 8) ~ NA,
+                              DIAHBRSK == 1 ~ "Normal",
+                              DIAHBRSK == 2 ~ "At risk of diabetes",
+                              DIAHBRSK == 3 ~ "Indicates diabetes") %>% as.factor(),
+         DIABFPGE = case_when(DIABFPGE %in% c(0, 8) ~ NA,
+                              DIABFPGE == 1 ~ "Has diabetes - known",
+                              DIABFPGE == 2 ~ "Has diabetes - newly diagnosed",
+                              DIABFPGE == 3 ~ "Nodiabetes - normal plasma glucose",
+                              DIABFPGE == 4 ~ "No diabetes - impaired plasma glucose")
+         %>% as.factor(),
+         DIABPRVE = case_when(DIABPRVE %in% c(0, 8) ~ NA,
+                              DIABPRVE == 1 ~ "Has diabetes - known",
+                              DIABPRVE == 2 ~ "Has diabetes - newly diagnosed",
+                              DIABPRVE == 3 ~ "No diabetes - normal",
+                              DIABPRVE == 4 ~ "No diabetes - at risk") %>% as.factor(),
+         FASTSTAD = case_when(FASTSTAD == 0 ~ NA,
+                              FASTSTAD == 1 ~ "Fasted (8+ hours)",
+                              FASTSTAD == 2 ~ "Did not fast") %>% as.factor(),
+         BIORESPC = case_when(BIORESPC == 0 ~ NA,
+                              BIORESPC == 1 ~ "Not biomedical participant",
+                              BIORESPC == 2 ~ "Biomedical participant") 
+         %>% as.factor(),
+         CHOLNTR = case_when(CHOLNTR %in% c(0, 8) ~ NA,
+                             CHOLNTR == 1 ~ "Normal",
+                             CHOLNTR == 2 ~ "Abnormal") %>% as.factor(),
+         HDLCHNTR = case_when(HDLCHNTR %in% c(0, 8) ~ NA,
+                              HDLCHNTR == 1 ~ "Normal",
+                              HDLCHNTR == 2 ~ "Abnormal") %>% as.factor(),
+         HDLCHSEX = case_when(HDLCHSEX %in% c(0, 8) ~ NA,
+                              HDLCHSEX == 1 ~ "Normal",
+                              HDLCHSEX == 2 ~ "Abnormal") %>% as.factor(),
+         LDLNTR = case_when(LDLNTR %in% c(0, 8) ~ NA,
+                            LDLNTR == 1 ~ "Normal",
+                            LDLNTR == 2 ~ "Abnormal") %>% as.factor(),
+         APOBNTR = case_when(APOBNTR %in% c(0, 8) ~ NA,
+                             APOBNTR == 1 ~ "Normal",
+                             APOBNTR == 2 ~ "Abnormal") %>% as.factor(),
+         TRIGNTR = case_when(TRIGNTR %in% c(0, 8) ~ NA,
+                             TRIGNTR == 1 ~ "Normal",
+                             TRIGNTR == 2 ~ "Abnormal") %>% as.factor(),
+         CVDMEDST = case_when(CVDMEDST %in% c(0, 8) ~ NA,
+                              CVDMEDST == 1 ~ "Dyslipidaemia, using medication, abnormal",
+                              CVDMEDST == 2 ~ "Dyslipidaemia, using medication, normal",
+                              CVDMEDST == 3 ~ "Dyslipidaemia, not using medication, abnormal",
+                              CVDMEDST == 4 ~ "No dyslipidaemia") %>% as.factor(),
+         EGFRKDSA = case_when(EGFRKDSA %in% c(0, 8) ~ NA,
+                              EGFRKDSA == 1 ~ "No indicators of CKD",
+                              EGFRKDSA == 2 ~ "Stage 1",
+                              EGFRKDSA == 3 ~ "Stage 2",
+                              EGFRKDSA == 4 ~ "Stage 3a",
+                              EGFRKDSA == 5 ~ "Stage 3b",
+                              EGFRKDSA == 6 ~ "Stage 4-5") %>% as.factor(),
+         EGFRIMP = case_when(EGFRIMP %in% c(0, 8) ~ NA,
+                             EGFRIMP == 1 ~ "Normal",
+                             EGFRIMP == 2 ~ "Abnormal") %>% as.factor(),
+         ALTNTR = case_when(ALTNTR %in% c(0, 8) ~ NA,
+                            ALTNTR == 1 ~ "Normal",
+                            ALTNTR == 2 ~ "Abnormal") %>% as.factor(),
+         GGTNTR = case_when(GGTNTR == 8 ~ NA,
+                            GGTNTR == 1 ~ "Normal",
+                            GGTNTR == 2 ~ "Abnormal") %>% as.factor(),
+         COTINIES = case_when(COTINIES %in% c(0, 8) ~ NA,
+                              COTINIES == 1 ~ "Greater than or equal to 140",
+                              COTINIES == 2 ~ "Less than 140") %>% as.factor(),
+         DIAHMRSK = case_when(DIAHMRSK %in% c(0, 8) ~ NA,
+                              DIAHMRSK == 1 ~ "Normal",
+                              DIAHMRSK == 2 ~ "At risk of diabetes",
+                              DIAHMRSK == 3 ~ "Indicates diabetes") %>% as.factor(),
+         HBDAP = case_when(HBDAP %in% c(0, 8) ~ NA,
+                           HBDAP == 1 ~ "Normal haemoglobin",
+                           HBDAP == 2 ~ "At risk of anaemia") %>% as.factor(),
+         GLUCFPD = case_when(GLUCFPD %in% c(0, 8) ~ NA,
+                             GLUCFPD == 1 ~ "No diabetes",
+                             GLUCFPD == 2 ~ "Impaired fasting plasma glucose",
+                             GLUCFPD == 3 ~ "Indicates diabetes") %>% as.factor(),
+         ACRNTR = case_when(ACRNTR %in% c(0, 8) ~ NA,
+                            ACRNTR == 1 ~ "No presence of albuminuria",
+                            ACRNTR == 2 ~ "Presence of albuminuria") %>% as.factor(),
+         ACRIPA = case_when(ACRIPA %in% c(0, 8) ~ NA,
+                            ACRIPA == 1 ~ "Normoalbuminuria",
+                            ACRIPA == 2 ~ "Microalbuminuria",
+                            ACRIPA == 3 ~ "Macroalbuminuria") %>% as.factor(),
+         MONTHCOL = case_when(MONTHCOL %in% c(97, 98) ~ NA,
+                              MONTHCOL == 1 ~ "January",
+                              MONTHCOL == 2 ~ "February",
+                              MONTHCOL == 3 ~ "March",
+                              MONTHCOL == 4 ~ "April",
+                              MONTHCOL == 5 ~ "May",
+                              MONTHCOL == 6 ~ "June",
+                              MONTHCOL == 7 ~ "July",
+                              MONTHCOL == 8 ~ "August",
+                              MONTHCOL == 9 ~ "September",
+                              MONTHCOL == 10 ~ "October",
+                              MONTHCOL == 11 ~ "November",
+                              MONTHCOL == 12 ~ "December") %>% as.factor(),
+         VDLCMRGT = case_when(VDLCMRGT %in% c(0, 8) ~ NA,
+                              VDLCMRGT == 1 ~ "Adequate vitamin D levels",
+                              VDLCMRGT == 2 ~ "Mild vitamin D deficiency",
+                              VDLCMRGT == 3 ~ "Moderate/severe vitamin D deficiency")
+         %>% as.factor())
+
+# Visualise Missing Data
+gg_miss_var(nhs4.data)
+
+# Summary statistics
+nhs4.data.categorical = nhs4.data %>% select(-c(ABSLID, NHMSPERW))
+lapply(nhs4.data.categorical, table)
+
+# Visual summaries
+ggplot(data = nhs4.data, aes(x = NHMSPERW)) +
+  geom_histogram(fill = "#69b3a2", color = "#e9ecef", alpha = 0.9) +
+  labs(y = "Frequency", x = "Biomedical Weight", title = "Histogram of NHMSPERW") +
+  theme_linedraw()
+```
+
+----
+
+# `AHSnhs11bcn-1.csv` Data Set
+
+For the sake of time, variables like `EVERCURF` will not be transformed in detail.
+
+```{r}
+# Data Cleaning
+nhs5 = read_csv(here("NHS", "AHSnhs11bcn-1.csv"))
+counts = c(dim(nhs5)[1], n_distinct(nhs5$ABSLID))
+cat("Total =", counts[1], "\nUnique =", counts[2])
+nhs5.data = nhs5 %>% select(ABSLID:INJFLGX) %>% 
+  mutate(ALLCON8C = case_when(ALLCON8C %in% c(7, 9) ~ NA,
+                              ALLCON8C == 1 ~ "0 to 24 years",
+                              ALLCON8C == 2 ~ "25 to 44 years",
+                              ALLCON8C == 3 ~ "45 to 64 years",
+                              ALLCON8C == 4 ~ "65 years and over") %>% as.factor(),
+         MHCAGEC = case_when(MHCAGEC %in% c(7, 8, 9) ~ NA,
+                             MHCAGEC == 1 ~ "Less than 25 years",
+                             MHCAGEC == 2 ~ "25 to 44 years",
+                             MHCAGEC == 3 ~ "45 to 64 years",
+                             MHCAGEC == 4 ~ "65 years or over") %>% as.factor(),
+         EVERCURF = na_if(EVERCURF, 0) %>% as.factor(),
+         ALLERGY = case_when(ALLERGY %in% c(0, 4) ~ NA,
+                             ALLERGY == 1 ~ "Anaphylactic",
+                             ALLERGY == 2 ~ "Non-anaphylactic",
+                             ALLERGY == 3 ~ "Both") %>% as.factor(),
+         CONDSTAT = case_when(CONDSTAT == 0 ~ NA,
+                              CONDSTAT == 1 ~ "Told, current, long-term",
+                              CONDSTAT == 2 ~ "Told, current, not long-term",
+                              CONDSTAT == 3 ~ "Told, not current",
+                              CONDSTAT == 4 ~ "Not told, current, long term",
+                              CONDSTAT == 5 ~ "Not told, not current or long term") 
+         %>% as.factor(),
+         CONNUMC = as.factor(CONNUMC),
+         GLASFLG = case_when(GLASFLG %in% c(0, 6) ~ NA,
+                             GLASFLG == 1 ~ "Corrected",
+                             GLASFLG == 2 ~ "Not corrected") %>% as.factor(),
+         DIABFLG = case_when(DIABFLG %in% c(0, 6) ~ NA,
+                             DIABFLG == 1 ~ "Caused by diabetes",
+                             DIABFLG == 2 ~ "Not caused by diabetes") %>% as.factor(),
+         INJFLGX = case_when(INJFLGX %in% c(0, 6) ~ NA,
+                             INJFLGX == 1 ~ "Result of injury",
+                             INJFLGX == 2 ~ "Not result of injury") %>% as.factor(),
+         ALLCON7A = na_if(ALLCON7A, 9),
+         ALLCON7 = pmap(list(ALLCON7A, ALLCON7B, ALLCON7C, ALLCON7D, ALLCON7E,
+                             ALLCON7F), function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             })
+         ) %>% select(-c(LEVEL7, ALLCON7A:ALLCON7F))
+
+# Visualise Missing Data
+gg_miss_var(nhs5.data)
+
+# Summary statistics
+nhs5.data.categorical = nhs5.data %>% select(-c(ABSLID, ALLCON7))
+lapply(nhs5.data.categorical, table)
+```
+
+----
+
+# `AHSnhs11bmd.csv` Data Set
+
+```{r}
+# Data Cleaning
+nhs6 = read_csv(here("NHS", "AHSnhs11bmd.csv"))
+counts = c(dim(nhs6)[1], n_distinct(nhs6$ABSLID))
+cat("Total =", counts[1], "\nUnique =", counts[2])
+nhs6.data = nhs6 %>% select(ABSLID:MEDQ05) %>% 
+  mutate(ATCCURFB = case_when(ATCCURFB %in% c(0, 99998) ~ NA,
+                              TRUE ~ ATCCURFB) %>% as.factor(),
+         SUPPCDEC = case_when(SUPPCDEC %in% c(0, 99999) ~ NA,
+                              TRUE ~ SUPPCDEC) %>% as.factor(),
+         INSFLAG = case_when(INSFLAG == 0 ~ NA,
+                             INSFLAG == 1 ~ "Insulin used daily",
+                             INSFLAG == 5 ~ "Insulin not used daily") %>% as.factor(),
+         MEDQ05 = case_when(MEDQ05 %in% c(0, 9) ~ NA,
+                            MEDQ05 == 1 ~ "Every day and/or night",
+                            MEDQ05 == 2 ~ "3 or more times a week",
+                            MEDQ05 == 3 ~ "1 to 2 times a week",
+                            MEDQ05 == 4 ~ "Less than once a week",
+                            MEDQ05 == 5 ~ "Varies/as required") %>% as.factor())
+
+# Visualise Missing Data
+gg_miss_var(nhs6.data)
+
+# Summary statistics
+nhs6.data.categorical = nhs6.data %>% select(-c(ABSLID))
+lapply(nhs6.data.categorical, table)
+```
+
+----
+
+# `AHSnhs11bhh.csv` Data Set
+
+Again, for this one we will remove the replicate weights and identifiers.
+
+```{r}
+# Data Cleaning
+nhs7 = read_csv(here("NHS", "AHSnhs11bhh.csv"))
+counts = c(dim(nhs7)[1], n_distinct(nhs7$ABSLID))
+cat("Total =", counts[1], "\nUnique =", counts[2])
+nhs7.data = nhs7 %>% relocate(ABSLID) %>% 
+  select(-c(WHROR01:WHROR60, LEVEL1, ABSPID:ABSMID)) %>% 
+  relocate(STATE, .after = 1) %>% 
+  mutate(STATE = case_when(STATE == 1 ~ "New South Wales",
+                           STATE == 2 ~ "Victoria",
+                           STATE == 3 ~ "Queensland",
+                           STATE == 4 ~ "South Australia",
+                           STATE == 5 ~ "Western Australia",
+                           STATE == 6 ~ "Tasmania",
+                           STATE == 7 ~ "Northern Territory",
+                           STATE == 8 ~ "Australian Capital Territory") 
+         %>% as.factor(),
+         HHSIZECB = case_when(HHSIZECB == 1 ~ "One",
+                              HHSIZECB == 2 ~ "Two",
+                              HHSIZECB == 3 ~ "Three",
+                              HHSIZECB == 4 ~ "Four",
+                              HHSIZECB == 5 ~ "Five",
+                              HHSIZECB == 6 ~ "Six or more") %>% as.factor(),
+         DSMKHHRB = case_when(DSMKHHRB == 9 ~ NA,
+                              DSMKHHRB == 0 ~ "None",
+                              DSMKHHRB == 1 ~ "One",
+                              DSMKHHRB == 2 ~ "Two",
+                              DSMKHHRB == 3 ~ "Three or more") %>% as.factor(),
+         LNDLORDB = case_when(LNDLORDB == 0 ~ NA,
+                              LNDLORDB == 1 ~ "Private",
+                              LNDLORDB == 2 ~ "Public",
+                              LNDLORDB == 3 ~ "Other") %>% as.factor(),
+         DWLSTRBC = case_when(DWLSTRBC == 8 ~ NA,
+                              DWLSTRBC == 1 ~ "Separate house",
+                              DWLSTRBC == 2 ~ "Semi-detached",
+                              DWLSTRBC == 3 ~ "Flat or apartment",
+                              DWLSTRBC == 4 ~ "Other dwelling") %>% as.factor(),
+         NUMRMSBC = case_when(NUMRMSBC == 8 ~ NA,
+                              NUMRMSBC == 0 ~ "None",
+                              NUMRMSBC == 1 ~ "One",
+                              NUMRMSBC == 2 ~ "Two",
+                              NUMRMSBC == 3 ~ "Three",
+                              NUMRMSBC == 4 ~ "Four or more") %>% as.factor(),
+         ARIABC = case_when(ARIABC == 1 ~ "Major cities of Australia",
+                            ARIABC == 2 ~ "Inner regional Australia",
+                            ARIABC == 3 ~ "Other") %>% as.factor(),
+         NUMKHHEC = case_when(NUMKHHEC == 0 ~ "None",
+                              NUMKHHEC == 1 ~ "One",
+                              NUMKHHEC == 2 ~ "Two",
+                              NUMKHHEC == 3 ~ "Three",
+                              NUMKHHEC == 4 ~ "Four or more") %>% as.factor(),
+         HHADULEC = case_when(HHADULEC == 0 ~ "None",
+                              HHADULEC == 1 ~ "One",
+                              HHADULEC == 2 ~ "Two",
+                              HHADULEC == 3 ~ "Three",
+                              HHADULEC == 4 ~ "Four or more") %>% as.factor(),
+         STHHTYC = case_when(STHHTYC == 1 ~ "One family household with only family members present", 
+                             STHHTYC == 2 ~ "Two or more family household with only family members present",
+                             STHHTYC == 3 ~ "One or more family household with non-family members present",
+                             STHHTYC == 4 ~ "Lone person household",
+                             STHHTYC == 5 ~ "Group household") %>% as.factor(),
+         TENUREC = case_when(TENUREC == 1 ~ "Owner with a mortgage",
+                             TENUREC == 2 ~ "Owner without a mortgage",
+                             TENUREC == 3 ~ "Renter",
+                             TENUREC == 4 ~ "Other") %>% as.factor(),
+         INCDECE = case_when(INCDECE %in% c(98, 99) ~ NA,
+                             TRUE ~ INCDECE) %>% as.factor(),
+         FINSTRS = case_when(FINSTRS %in% c(8, 9) ~ NA,
+                             FINSTRS == 1 ~ "Could raise $2000 in a week",
+                             FINSTRS == 2 ~ "Could not raise $2000 in a week") %>% 
+           as.factor(),
+         SF2SA1DN = na_if(SF2SA1DN, 0) %>% as.factor(),
+         SMKHSQ4D = case_when(SMKHSQ4D %in% c(0, 8) ~ NA,
+                              SMKHSQ4D == 1 ~ "Smoked at home indoors",
+                              SMKHSQ4D == 5 ~ "Did not smoke at home indoors") %>% 
+           as.factor(),
+         PHONEQ01 = case_when(PHONEQ01 == 8 ~ NA,
+                              PHONEQ01 == 1 ~ "Has landline/fixed phone",
+                              PHONEQ01 == 2 ~ "Does not have landline/fixed phone") %>% 
+           as.factor(),
+         LANDWH = case_when(LANDWH == 8 ~ NA,
+                            LANDWH == 1 ~ "Has landline number in white pages",
+                            LANDWH == 2 ~ "Does not have landline number in white pages",
+                            LANDWH == 3 ~ "Does not have landline number") %>%
+           as.factor()
+         )
+
+# Visualise Missing Data
+gg_miss_var(nhs7.data)
+
+# Summary statistics
+nhs7.data.categorical = nhs7.data %>% select(-c(ABSLID, NHSFHHWT))
+lapply(nhs7.data.categorical, table)
+
+# Visual summaries
+ggplot(data = nhs7.data, aes(x = NHSFHHWT)) +
+  geom_histogram(fill = "#69b3a2", color = "#e9ecef", alpha = 0.9) +
+  labs(y = "Frequency", x = "Household Weight", title = "Histogram of NHSFHHWT") +
+  theme_linedraw()
+```
+
+----
+
+# `AHSnhs11bsp.csv` Data Set
+
+This is definitely the largest data set by far, so it will take a bit longer to clean.
+
+```{r}
+# Data Cleaning
+nhs8 = read_csv(here("NHS", "AHSnhs11bsp.csv"))
+counts = c(dim(nhs8)[1], n_distinct(nhs8$ABSLID))
+cat("Total =", counts[1], "\nUnique =", counts[2])
+nhs8.data = nhs8 %>% select(-c(LEVEL3, ABSBID:ABSMID)) %>% 
+  mutate(AGEB = case_when(AGEB == 1 ~ "0-4 years",
+                          AGEB == 2 ~ "5-9 years",
+                          AGEB == 3 ~ "10-14 years",
+                          AGEB == 4 ~ "15-17 years",
+                          AGEB == 5 ~ "18-19 years",
+                          AGEB == 6 ~ "20-24 years",
+                          AGEB == 7 ~ "25-29 years",
+                          AGEB == 8 ~ "30-34 years",
+                          AGEB == 9 ~ "35-39 years",
+                          AGEB == 10 ~ "40-44 years",
+                          AGEB == 11 ~ "45-49 years",
+                          AGEB == 12 ~ "50-54 years",
+                          AGEB == 13 ~ "55-59 years",
+                          AGEB == 14 ~ "60-64 years",
+                          AGEB == 15 ~ "65-69 years",
+                          AGEB == 16 ~ "70-74 years",
+                          AGEB == 17 ~ "75-79 years",
+                          AGEB == 18 ~ "80-84 years",
+                          AGEB == 19 ~ "85 years and older") %>% as.factor(),
+         COBCODBC = case_when(COBCODBC == 1 ~ "Australia",
+                              COBCODBC == 2 ~ "Main English speaking countries",
+                              COBCODBC == 3 ~ "Other") %>% as.factor(),
+         YOABC = case_when(YOABC == 1 ~ "Born in Australia",
+                           YOABC == 2 ~ "Arrived 1985 and before",
+                           YOABC == 3 ~ "Arrived 1986-1990",
+                           YOABC == 4 ~ "Arrived 1991-1995",
+                           YOABC == 5 ~ "Arrived 1996-2000",
+                           YOABC == 6 ~ "Arrived 2001-2005",
+                           YOABC == 7 ~ "Arrived 2006 to year of collection") %>% 
+           as.factor(),
+         CURSTUBC = case_when(CURSTUBC == 0 ~ NA,
+                              CURSTUBC == 1 ~ "University or other higher education",
+                              CURSTUBC == 2 ~ "TAFE or technical college",
+                              CURSTUBC == 3 ~ "Other") %>% as.factor(),
+         HLVNSEDC = case_when(HLVNSEDC %in% c(0, 8) ~ NA,
+                              HLVNSEDC == 1 ~ "Postgraduate Degree, Graduate Diploma, Graduate Certificate",
+                              HLVNSEDC == 2 ~ "Bachelor Degree",
+                              HLVNSEDC == 3 ~ "Advanced Diploma/Diploma",
+                              HLVNSEDC == 4 ~ "Certificate III/IV",
+                              HLVNSEDC == 5 ~ "Certificate I/II",
+                              HLVNSEDC == 6 ~ "Certificate not further defined",
+                              HLVNSEDC == 7 ~ "No non-school qualification") %>% 
+           as.factor(),
+         CLVNSEDC = case_when(CLVNSEDC %in% c(0, 8) ~ NA,
+                              CLVNSEDC == 1 ~ "Postgraduate Degree, Graduate Diploma, Graduate Certificate",
+                              CLVNSEDC == 2 ~ "Bachelor Degree",
+                              CLVNSEDC == 3 ~ "Advanced Diploma/Diploma",
+                              CLVNSEDC == 4 ~ "Certificate III/IV",
+                              CLVNSEDC == 5 ~ "Certificate I/II",
+                              CLVNSEDC == 6 ~ "Certificate not further defined",
+                              CLVNSEDC == 7 ~ "Other education",
+                              CLVNSEDC == 9 ~ "Secondary school studies only",
+                              CLVNSEDC == 10 ~ "Not currently studying") %>% 
+           as.factor(),
+         INDUSTBC = case_when(INDUSTBC %in% c(25, 26) ~ NA,
+                              INDUSTBC == 1 ~ "Agriculture, Forestry and Fishing",
+                              INDUSTBC == 2 ~ "Mining",
+                              INDUSTBC == 3 ~ "Manufacturing",
+                              INDUSTBC == 4 ~ "Electricity, Gas, Water and Waste Services",
+                              INDUSTBC == 5 ~ "Construction",
+                              INDUSTBC == 6 ~ "Wholesale Trade",
+                              INDUSTBC == 7 ~ "Retail Trade",
+                              INDUSTBC == 8 ~ "Accommodation and Food Services",
+                              INDUSTBC == 9 ~ "Transport, Postal and Warehousing",
+                              INDUSTBC == 10 ~ "Information Media and Telecommunications",
+                              INDUSTBC == 11 ~ "Financial and Insurance Services",
+                              INDUSTBC == 12 ~ "Rental, Hiring and Real Estate Services",
+                              INDUSTBC == 13 ~ "Professional, Scientific and Technical Services",
+                              INDUSTBC == 14 ~ "Administrative and Support Services",
+                              INDUSTBC == 15 ~ "Public Administration and Safety",
+                              INDUSTBC == 16 ~ "Education and Training",
+                              INDUSTBC == 17 ~ "Health Care and Social Assistance",
+                              INDUSTBC == 18 ~ "Arts and Recreation Services",
+                              INDUSTBC == 19 ~ "Other Services") %>% as.factor(),
+         USHRWKB = case_when(USHRWKB == 0 ~ NA,
+                             USHRWKB == 1 ~ "1 to 15 hours",
+                             USHRWKB == 2 ~ "16 to 24 hours",
+                             USHRWKB == 3 ~ "25 to 34 hours",
+                             USHRWKB == 4 ~ "35 to 39 hours",
+                             USHRWKB == 5 ~ "40 hours",
+                             USHRWKB == 6 ~ "41 to 49 hours",
+                             USHRWKB == 7 ~ "50 hours or more") %>% as.factor(),
+         UNEMPDRB = case_when(UNEMPDRB %in% c(0, 8) ~ NA,
+                              UNEMPDRB == 1 ~ "Under 4 weeks",
+                              UNEMPDRB == 2 ~ "4 weeks and under 13 weeks",
+                              UNEMPDRB == 3 ~ "13 weeks and under 26 weeks",
+                              UNEMPDRB == 4 ~ "26 weeks and under 52 weeks",
+                              UNEMPDRB == 5 ~ "52 weeks and over") %>% as.factor(),
+         LSTWKFTB = case_when(LSTWKFTB %in% c(0, 8) ~ NA,
+                              LSTWKFTB == 1 ~ "Under 4 weeks",
+                              LSTWKFTB == 2 ~ "4 weeks and under 13 weeks",
+                              LSTWKFTB == 3 ~ "13 weeks and under 26 weeks",
+                              LSTWKFTB == 4 ~ "26 weeks and under 52 weeks",
+                              LSTWKFTB == 5 ~ "52 weeks and over",
+                              LSTWKFTB == 6 ~ "Never worked in a job of 35 hours or more") %>% as.factor(),
+         OCCUPBC = case_when(OCCUPBC %in% c(0, 9) ~ NA,
+                             OCCUPBC == 1 ~ "Managers",
+                             OCCUPBC == 2 ~ "Professionals",
+                             OCCUPBC == 3 ~ "Technicians and Trades Workers",
+                             OCCUPBC == 4 ~ "Community and Personal Service Workers",
+                             OCCUPBC == 5 ~ "Clerical and Administrative Workers",
+                             OCCUPBC == 6 ~ "Sales Workers",
+                             OCCUPBC == 7 ~ "Machinery Operators and Drivers",
+                             OCCUPBC == 8 ~ "Labourers") %>% as.factor(),
+         SMOKE11B = case_when(SMOKE11B == 0 ~ NA,
+                              SMOKE11B == 1 ~ "Less than 18 years",
+                              SMOKE11B == 2 ~ "18 to 24 years",
+                              SMOKE11B == 3 ~ "25 to 29 years",
+                              SMOKE11B == 4 ~ "30 to 34 years",
+                              SMOKE11B == 5 ~ "35 to 39 years",
+                              SMOKE11B == 6 ~ "40 to 44 years",
+                              SMOKE11B == 7 ~ "45 to 49 years",
+                              SMOKE11B == 8 ~ "50 to 54 years",
+                              SMOKE11B == 9 ~ "55 to 59 years",
+                              SMOKE11B == 10 ~ "60 to 64 years",
+                              SMOKE11B == 11 ~ "65 years and over") %>% as.factor(),
+         SMOKEQ8B = case_when(SMOKEQ8B == 0 ~ NA,
+                              SMOKEQ8B == 1 ~ "Less than 12 years",
+                              SMOKEQ8B == 2 ~ "12 to 14 years",
+                              SMOKEQ8B == 3 ~ "15 to 17 years",
+                              SMOKEQ8B == 4 ~ "18 to 24 years",
+                              SMOKEQ8B == 5 ~ "25 to 29 years",
+                              SMOKEQ8B == 6 ~ "30 to 34 years",
+                              SMOKEQ8B == 7 ~ "35 to 39 years",
+                              SMOKEQ8B == 8 ~ "40 years and over") %>% as.factor(),
+         SMKAGEDB = case_when(SMKAGEDB == 7 ~ NA,
+                              SMKAGEDB == 1 ~ "Less than 10 years",
+                              SMKAGEDB == 2 ~ "10 to 19 years",
+                              SMKAGEDB == 3 ~ "20 to 29 years",
+                              SMKAGEDB == 4 ~ "30 to 39 years",
+                              SMKAGEDB == 5 ~ "40 to 49 years",
+                              SMKAGEDB == 6 ~ "50 years and over",
+                              SMKAGEDB == 8 ~ "Never smoked daily") %>% as.factor(),
+         CNCRQ16B = case_when(CNCRQ16B == 0 ~ NA,
+                              CNCRQ16B == 1 ~ "Less than 50 years",
+                              CNCRQ16B == 2 ~ "50 years or more") %>% as.factor(),
+         MSKRTBC = case_when(MSKRTBC %in% c(0, 98, 99) ~ NA,
+                             MSKRTBC == 1 ~ "Less than 15 years",
+                             MSKRTBC == 2 ~ "15 to 17 years",
+                             MSKRTBC == 3 ~ "18 to 24 years",
+                             MSKRTBC == 4 ~ "25 to 29 years",
+                             MSKRTBC == 5 ~ "30 to 34 years",
+                             MSKRTBC == 6 ~ "35 to 39 years",
+                             MSKRTBC == 7 ~ "40 to 44 years",
+                             MSKRTBC == 8 ~ "45 to 49 years",
+                             MSKRTBC == 9 ~ "50 to 54 years",
+                             MSKRTBC == 10 ~ "55 to 59 years",
+                             MSKRTBC == 11 ~ "60 to 64 years",
+                             MSKRTBC == 12 ~ "65 to 69 years",
+                             MSKRTBC == 13 ~ "70 to 74 years",
+                             MSKRTBC == 14 ~ "75 to 79 years",
+                             MSKRTBC == 15 ~ "80 years and over") %>% as.factor(),
+         MSKOSTBC = case_when(MSKOSTBC %in% c(0, 8, 9) ~ NA,
+                              MSKOSTBC == 1 ~ "Less than 25 years",
+                              MSKOSTBC == 2 ~ "25-44 years",
+                              MSKOSTBC == 3 ~ "45-64 years",
+                              MSKOSTBC == 4 ~ "65-84 years",
+                              MSKOSTBC == 5 ~ "85 years and over") %>% as.factor(),
+         AGEDIABC = case_when(AGEDIABC %in% c(0, 9) ~ NA,
+                              AGEDIABC == 1 ~ "Less than 25 years",
+                              AGEDIABC == 2 ~ "25-44 years",
+                              AGEDIABC == 3 ~ "45-64 years",
+                              AGEDIABC == 4 ~ "65-79 years",
+                              AGEDIABC == 5 ~ "80 years and over") %>% as.factor(),
+         MAINLANB = case_when(MAINLANB == 0 ~ NA,
+                              MAINLANB == 1 ~ "English",
+                              MAINLANB == 2 ~ "Other Language") %>% as.factor(),
+         SMSBC = case_when(SMSBC == 0 ~ NA,
+                           SMSBC == 1 ~ "Married",
+                           SMSBC == 2 ~ "Not married") %>% as.factor(),
+         HYSCHCBC = case_when(HYSCHCBC %in% c(0, 9) ~ NA,
+                              HYSCHCBC == 1 ~ "Year 12 or equivalent",
+                              HYSCHCBC == 2 ~ "Year 11 or equivalent",
+                              HYSCHCBC == 3 ~ "Year 10 or equivalent",
+                              HYSCHCBC == 4 ~ "Year 9 or equivalent",
+                              HYSCHCBC == 5 ~ "Year 8 or below including never attended school") %>% as.factor(),
+         MWBS14E = case_when(MWBS14E == 9 ~ NA,
+                             MWBS14E == 5 ~ "5 times or more",
+                             TRUE ~ as.character(MWBS14E)) %>% as.factor(),
+         # For now turn this into categorical
+         EXFSRMNE = case_when(EXFSRMNE %in% c(9996, 9999) ~ NA,
+                              EXFSRMNE < 300 ~ "0-299",
+                              EXFSRMNE < 600 ~ "300-599",
+                              EXFSRMNE < 900 ~ "600-899",
+                              EXFSRMNE >= 900 ~ "900 and up") %>% as.factor(),
+         EXLWMBC = case_when(EXLWMBC %in% c(9996, 9999) ~ NA,
+                             EXLWMBC < 300 ~ "0-299",
+                             EXLWMBC < 600 ~ "300-599",
+                             EXLWMBC < 900 ~ "600-899",
+                             EXLWMBC >= 900 ~ "900 and up") %>% as.factor(),
+         EXLWVBC = case_when(EXLWVBC %in% c(9996, 9999) ~ NA,
+                             EXLWVBC < 300 ~ "0-299",
+                             EXLWVBC < 600 ~ "300-599",
+                             EXLWVBC < 900 ~ "600-899",
+                             EXLWVBC >= 900 ~ "900 and up") %>% as.factor(),
+         EXLWKFNR = case_when(EXLWKFNR %in% c(996, 999) ~ NA,
+                              EXLWKFNR < 10 ~ "0-9",
+                              EXLWKFNR < 20 ~ "10-19",
+                              EXLWKFNR < 30 ~ "20-29",
+                              EXLWKFNR >= 30 ~ "30 and up") %>% as.factor(),
+         NUEXTRAR = case_when(NUEXTRAR %in% c(996, 999) ~ NA,
+                              NUEXTRAR < 10 ~ "0-9",
+                              NUEXTRAR < 20 ~ "10-19",
+                              NUEXTRAR < 30 ~ "20-29",
+                              NUEXTRAR < 40 ~ "30-39",
+                              NUEXTRAR < 50 ~ "40-49",
+                              NUEXTRAR >= 50 ~ "50 and up") %>% as.factor(),
+         EXTRMINR = case_when(EXTRMINR %in% c(9996, 9999) ~ NA,
+                              EXTRMINR < 300 ~ "0-299",
+                              EXTRMINR < 600 ~ "300-599",
+                              EXTRMINR < 900 ~ "600-899",
+                              EXTRMINR < 1200 ~ "900-1199",
+                              EXTRMINR > 1200 ~ "1200 and up") %>% as.factor(),
+         EXLMONOR = case_when(EXLMONOR %in% c(996, 999) ~ NA,
+                              EXLMONOR < 5 ~ "0-4",
+                              EXLMONOR < 10 ~ "5-9",
+                              EXLMONOR < 15 ~ "10-14",
+                              EXLMONOR >= 15 ~ "15 and up") %>% as.factor(),
+         EXLVIGNR = case_when(EXLVIGNR %in% c(996, 999) ~ NA,
+                              EXLVIGNR < 5 ~ "0-4",
+                              EXLVIGNR < 10 ~ "5-9",
+                              EXLVIGNR < 15 ~ "10-14",
+                              EXLVIGNR < 20 ~ "15-20",
+                              EXLVIGNR >= 20 ~ "20 and up") %>% as.factor(),
+         EXLWTIMR = case_when(EXLWTIMR %in% c(9996, 9999) ~ NA,
+                              TRUE ~ EXLWTIMR),
+         EXLWNOR = case_when(EXLWNOR %in% c(996, 999) ~ NA,
+                             TRUE ~ EXLWNOR),
+         AGEINSLC = case_when(AGEINSLC %in% c(0, 8, 9) ~ NA,
+                              AGEINSLC == 1 ~ "Less than 25 years",
+                              AGEINSLC == 2 ~ "25 to 44 years",
+                              AGEINSLC == 3 ~ "45 to 64 years",
+                              AGEINSLC == 4 ~ "65 years and over") %>% as.factor(),
+         AGEMHCF = case_when(AGEMHCF %in% c(0, 8) ~ NA,
+                             AGEMHCF == 1 ~ "Less than 25 years",
+                             AGEMHCF == 2 ~ "25 to 44 years",
+                             AGEMHCF == 3 ~ "45 to 64 years",
+                             AGEMHCF == 4 ~ "65 years and over") %>% as.factor(),
+         # May make age adjustments in the future, for now is raw values (?)
+         PHDKGW2 = case_when(PHDKGW2 %in% c(0, 997, 998, 999) ~ NA,
+                             TRUE ~ PHDKGW2),
+         PHDCMH2 = case_when(PHDCMH2 %in% c(0, 997, 998, 999) ~ NA,
+                             TRUE ~ PHDCMH2),
+         PHDCMWBC = case_when(PHDCMWBC %in% c(0, 998, 999) ~ NA,
+                              PHDCMWBC <= 40 ~ "40cm and under",
+                              PHDCMWBC < 140 ~ "40.1cm to 139.9cm",
+                              PHDCMWBC >= 140 ~ "140cm and over") %>% as.factor(),
+         BMISC = case_when(BMISC %in% c(0, 98, 99) ~ NA,
+                           TRUE ~ BMISC),
+         BMICATHY = case_when(BMICATHY %in% c(0, 98, 99) ~ NA,
+                              BMICATHY == 1 ~ "Underweight Class 3",
+                              BMICATHY == 2 ~ "Underweight Class 2",
+                              BMICATHY == 3 ~ "Underweight Class 1",
+                              BMICATHY %in% c(4, 5) ~ "Normal Range",
+                              BMICATHY == 6 ~ "Overweight",
+                              BMICATHY == 7 ~ "Obese Class 1",
+                              BMICATHY == 8 ~ "Obese Class 2",
+                              BMICATHY == 9 ~ "Obese Class 3") %>% as.factor(),
+         BMIMCATW = case_when(BMIMCATW %in% c(0, 98, 99) ~ NA,
+                              BMIMCATW == 1 ~ "Underweight Class 3",
+                              BMIMCATW == 2 ~ "Underweight Class 2",
+                              BMIMCATW == 3 ~ "Underweight Class 1",
+                              BMIMCATW %in% c(4, 5) ~ "Normal Range",
+                              BMIMCATW == 6 ~ "Overweight",
+                              BMIMCATW == 7 ~ "Obese Class 1",
+                              BMIMCATW == 8 ~ "Obese Class 2",
+                              BMIMCATW == 9 ~ "Obese Class 3") %>% as.factor(),
+         PHDWCATM = case_when(PHDWCATM %in% c(0, 9) ~ NA,
+                              PHDWCATM == 1 ~ "Not at risk",
+                              PHDWCATM == 2 ~ "Increased risk",
+                              PHDWCATM == 3 ~ "Substantially increased risk") %>%
+           as.factor(),
+         PHDWCATF = case_when(PHDWCATF %in% c(0, 9) ~ NA,
+                              PHDWCATF == 1 ~ "Not at risk",
+                              PHDWCATF == 2 ~ "Increased risk",
+                              PHDWCATF == 3 ~ "Substantially increased risk") %>%
+           as.factor(),
+         HIGOVEC = case_when(HIGOVEC %in% c(0, 9) ~ NA,
+                             HIGOVEC == 1 ~ "Has government health concession card",
+                             HIGOVEC == 2 ~ "Does not have government health concession card") %>% as.factor(),
+         HIGCOCFA = na_if(HIGCOCFA, 9),
+         HIGCOCF = pmap(list(HIGCOCFA, HIGCOCFB, HIGCOCFC, HIGCOCFD, HIGCOCFE),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             })
+         ) %>% select(-c(HIGCOCFA:HIGCOCFE)) %>% 
+  mutate(INCDECPN = case_when(INCDECPN %in% c(0, 98, 99) ~ NA,
+                              TRUE ~ INCDECPN) %>% as.factor(),
+         DIABSQ6C = case_when(DIABSQ6C == 0 ~ NA,
+                              DIABSQ6C == 1 ~ "Less than 1 year",
+                              DIABSQ6C == 2 ~ "1 year or more",
+                              DIABSQ6C == 5 ~ "Never") %>% as.factor(),
+         LFSBC = case_when(LFSBC == 0 ~ NA,
+                           LFSBC == 1 ~ "Employed",
+                           LFSBC == 2 ~ "Unemployed",
+                           LFSBC == 3 ~ "Not in labour force") %>% as.factor(),
+         EMPTYPCF = case_when(EMPTYPCF %in% c(0, 9) ~ NA,
+                              EMPTYPCF == 1 ~ "Employee",
+                              EMPTYPCF == 2 ~ "Employer",
+                              EMPTYPCF == 3 ~ "Own account worker/Contributing family worker") %>% as.factor(),
+         HEALF05E = case_when(HEALF05E == 0 ~ NA,
+                              HEALF05E == 1 ~ "Once",
+                              HEALF05E == 2 ~ "Twice",
+                              HEALF05E == 3 ~ "Three or more") %>% as.factor(),
+         SHFTWKEC = case_when(SHFTWKEC %in% c(0, 9) ~ NA,
+                              SHFTWKEC == 1 ~ "Rotating shift with periodic change",
+                              SHFTWKEC == 2 ~ "Regular evening, night or graveyard shift",
+                              SHFTWKEC == 3 ~ "Regular morning shift",
+                              SHFTWKEC == 4 ~ "Regular afternoon",
+                              SHFTWKEC == 5 ~ "Irregular shift",
+                              SHFTWKEC == 6 ~ "Split shift",
+                              SHFTWKEC == 7 ~ "Other") %>% as.factor(),
+         HEALF07E = case_when(HEALF07E == 0 ~ NA,
+                              HEALF07E == 1 ~ "Once",
+                              HEALF07E == 2 ~ "Twice",
+                              HEALF07E == 3 ~ "Three or more") %>% as.factor(),
+         HEALF11E = case_when(HEALF11E == 1 ~ "Admitted as inpatient",
+                              HEALF11E == 2 ~ "Not admitted as inpatient") %>% 
+           as.factor(),
+         HEALF13E = case_when(HEALF13E == 1 ~ "Visited outpatient clinic hospital",
+                              HEALF13E == 2 ~ "Did not visit outpatient clinic hospital") %>% as.factor(),
+         DIABSIGE = case_when(DIABSIGE %in% c(0, 8, 9) ~ NA,
+                              DIABSIGE == 1 ~ "Less than 1 year",
+                              DIABSIGE == 2 ~ "1 to 4 years",
+                              DIABSIGE == 3 ~ "5 years or more",
+                              DIABSIGE == 5 ~ "Never") %>% as.factor(),
+         CSTUDQ4C = case_when(CSTUDQ4C == 0 ~ NA,
+                              CSTUDQ4C == 1 ~ "Natural and physical sciences",
+                              CSTUDQ4C == 2 ~ "Information technology",
+                              CSTUDQ4C == 3 ~ "Engineering and related technologies",
+                              CSTUDQ4C == 4 ~ "Architecture and building",
+                              CSTUDQ4C == 5 ~ "Agriculture, environmental and related studies",
+                              CSTUDQ4C == 6 ~ "Health",
+                              CSTUDQ4C == 7 ~ "Education",
+                              CSTUDQ4C == 8 ~ "Management and commerce",
+                              CSTUDQ4C == 9 ~ "Society and culture",
+                              CSTUDQ4C == 10 ~ "Creative arts",
+                              CSTUDQ4C == 11 ~ "Food, hospitality and personal services",
+                              CSTUDQ4C == 12 ~ "Mixed field programmes",
+                              CSTUDQ4C == 13 ~ "Secondary school studies only",
+                              CSTUDQ4C == 14 ~ "Not currently studying") %>%
+           as.factor(),
+         HEALF15E = case_when(HEALF15E == 1 ~ "Visited emergency/casualty department",
+                              HEALF15E == 2 ~ "Did not visit emergency/casualty department") %>% as.factor(),
+         HEALF17E = case_when(HEALF17E == 1 ~ "Visited day clinic",
+                              HEALF17E == 2 ~ "Did not visit day clinic") %>%
+           as.factor(),
+         INCCIMSC = case_when(INCCIMSC %in% c(0, 5) ~ NA,
+                              INCCIMSC == 1 ~ "Wage or salary",
+                              INCCIMSC == 2 ~ "Unincorporated business income",
+                              INCCIMSC == 3 ~ "Government pensions and allowances",
+                              INCCIMSC == 4 ~ "Other cash income") %>% as.factor(),
+         INCGOECA = na_if(INCGOECA, 11),
+         INCGOEC = pmap(list(INCGOECA, INCGOECB, INCGOECC, INCGOECD, INCGOECE,
+                             INCGOECF, INCGOECG, INCGOECH, INCGOECI, INCGOECJ),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             })
+         ) %>% select(-c(INCGOECA:INCGOECJ)) %>% 
+  mutate(EMPARRCF = case_when(EMPARRCF == 0 ~ NA,
+                              EMPARRCF == 1 ~ "Wage/salary earner",
+                              EMPARRCF == 9 ~ "Other"),
+         INCRACFA = na_if(INCRACFA, 5),
+         INCRACF = pmap(list(INCRACFA, INCRACFB, INCRACFC, INCRACFD),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             })
+         ) %>% select(-c(INCRACFA:INCRACFD)) %>%
+  mutate(HEAL12MA = na_if(HEAL12MA, 98),
+         HEAL12M = pmap(list(HEAL12MA, HEAL12MB, HEAL12MC, HEAL12MD,
+                             HEAL12ME, HEAL12MF, HEAL12MG, HEAL12MH,
+                             HEAL12MI, HEAL12MJ, HEAL12MK, HEAL12ML,
+                             HEAL12MM, HEAL12MN, HEAL12MO, HEAL12MP, 
+                             HEAL12MQ, HEAL12MR, HEAL12MS, HEAL12MT,
+                             HEAL12MU, HEAL12MV, HEAL12MW, HEAL12MX, HEAL12MY),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             })
+         ) %>% select(-c(HEAL12MA:HEAL12MY)) %>% 
+  mutate(HEAL2WKA = na_if(HEAL2WKA, 98),
+         HEAL2WK = pmap(list(HEAL2WKA, HEAL2WKB, HEAL2WKC, HEAL2WKD,
+                             HEAL2WKE, HEAL2WKF, HEAL2WKG, HEAL2WKH,
+                             HEAL2WKI, HEAL2WKJ, HEAL2WKK, HEAL2WKL,
+                             HEAL2WKM, HEAL2WKN, HEAL2WKO, HEAL2WKP, 
+                             HEAL2WKQ, HEAL2WKR, HEAL2WKS, HEAL2WKT,
+                             HEAL2WKU, HEAL2WKV, HEAL2WKW, HEAL2WKX),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             })
+         ) %>% select(-c(HEAL2WKA:HEAL2WKX)) %>% 
+  mutate(MFIELDCF = case_when(MFIELDCF == 0 ~ NA,
+                              MFIELDCF == 1 ~ "Natural and physical sciences",
+                              MFIELDCF == 2 ~ "Information technology",
+                              MFIELDCF == 3 ~ "Engineering and related technologies",
+                              MFIELDCF == 4 ~ "Architecture and building",
+                              MFIELDCF == 5 ~ "Agriculture, environmental and related studies",
+                              MFIELDCF == 6 ~ "Health",
+                              MFIELDCF == 7 ~ "Education",
+                              MFIELDCF == 8 ~ "Management and commerce",
+                              MFIELDCF == 9 ~ "Society and culture",
+                              MFIELDCF == 10 ~ "Creative arts",
+                              MFIELDCF == 11 ~ "Food, hospitality and personal services",
+                              MFIELDCF == 12 ~ "Mixed field programmes",
+                              MFIELDCF == 13 ~ "No non-school qualification") %>% 
+           as.factor(),
+         HEALF25E = case_when(HEALF25E == 97 ~ NA,
+                              HEALF25E >= 12 ~ "12 or more",
+                              TRUE ~ as.character(HEALF25E)) %>% as.factor(),
+         FEMLSBC = case_when(FEMLSBC == 9 ~ NA,
+                             FEMLSBC == 1 ~ "Have never menstruated",
+                             FEMLSBC == 2 ~ "Currently pregnant",
+                             FEMLSBC == 3 ~ "Currently breastfeeding",
+                             FEMLSBC == 4 ~ "Currently experiencing menopause",
+                             FEMLSBC == 5 ~ "Post menopause",
+                             FEMLSBC == 6 ~ "None apply") %>% as.factor()) %>% 
+  select(-c(WPM0101:WPM0160)) %>% 
+  mutate(MNKESSLR = case_when(MNKESSLR %in% c(0, 98, 99) ~ NA,
+                              TRUE ~ MNKESSLR),
+         MNKESSGP = case_when(MNKESSGP %in% c(0, 5, 8) ~ NA,
+                              MNKESSGP == 1 ~ "Low distress level",
+                              MNKESSGP == 2 ~ "Moderate distress level",
+                              MNKESSGP == 3 ~ "High distress level",
+                              MNKESSGP == 4 ~ "Very high distress level") %>%
+           as.factor(),
+         MNKFIVGP = case_when(MNKFIVGP %in% c(0, 3, 4) ~ NA,
+                              MNKFIVGP == 1 ~ "Low/moderate",
+                              MNKFIVGP == 2 ~ "High/very high") %>% as.factor(),
+         MNKFIV = case_when(MNKFIV %in% c(0, 98, 99) ~ NA,
+                            TRUE ~ MNKFIV),
+         TOTPAC = case_when(TOTPAC %in% c(0, 999998) ~ NA,
+                            TRUE ~ TOTPAC),
+         ALINTDAY = case_when(ALINTDAY %in% c(9998, 9999) ~ NA,
+                              ALINTDAY == 9997 ~ 0,
+                              TRUE ~ ALINTDAY),
+         ALINTWK = case_when(ALINTWK %in% c(9998, 9999) ~ NA,
+                             ALINTWK == 9997 ~ 0,
+                             TRUE ~ ALINTWK),
+         ALCWKLY = case_when(ALCWKLY %in% c(9998, 9999) ~ NA,
+                             ALCWKLY == 9997 ~ 0,
+                             TRUE ~ ALCWKLY),
+         ALCWKSD = case_when(ALCWKSD %in% c(998, 999) ~ NA,
+                             ALCWKSD == 997 ~ 0,
+                             TRUE ~ ALCWKSD),
+         AL3DAYAV = case_when(AL3DAYAV %in% c(98, 99) ~ NA,
+                             AL3DAYAV == 97 ~ 0,
+                             TRUE ~ AL3DAYAV),
+         AL2K3DAY = case_when(AL2K3DAY %in% c(0, 8, 9) ~ NA,
+                              AL2K3DAY == 1 ~ "Low risk",
+                              AL2K3DAY == 2 ~ "Medium risk",
+                              AL2K3DAY == 3 ~ "High risk",
+                              AL2K3DAY == 4 ~ "Last consumed alcohol 1 week to less than 12 months ago",
+                              AL2K3DAY == 5 ~ "Last consumed alcohol 12 months or more ago",
+                              AL2K3DAY == 6 ~ "Never consumed alcohol") %>%
+           as.factor(),
+         AL2K7DAY = case_when(AL2K7DAY %in% c(0, 8, 9) ~ NA,
+                              AL2K7DAY == 1 ~ "Low risk",
+                              AL2K7DAY == 2 ~ "Medium risk",
+                              AL2K7DAY == 3 ~ "High risk",
+                              AL2K7DAY == 4 ~ "Last consumed alcohol 1 week to less than 12 months ago",
+                              AL2K7DAY == 5 ~ "Last consumed alcohol 12 months or more ago",
+                              AL2K7DAY == 6 ~ "Never consumed alcohol") %>%
+           as.factor(),
+         ALWKDFLG = case_when(ALWKDFLG == 0 ~ NA,
+                              ALWKDFLG == 1 ~ "Fully enumerated",
+                              ALWKDFLG == 2 ~ "Partly enumerated",
+                              ALWKDFLG == 3 ~ "Not enumerated",
+                              ALWKDFLG == 4 ~ "No consumption") %>% as.factor(),
+         ALINWKSD = case_when(ALINWKSD %in% c(98, 99) ~ NA,
+                             ALINWKSD == 97 ~ 0,
+                             TRUE ~ ALINWKSD),
+         ALCLTR7D = case_when(ALCLTR7D %in% c(0, 8, 9) ~ NA,
+                              ALCLTR7D == 1 ~ "Exceeded guidelines",
+                              ALCLTR7D == 2 ~ "Did not exceed guidelines",
+                              ALCLTR7D == 4 ~ "Last consumed alcohol 1 week to less than 12 months ago",
+                              ALCLTR7D == 5 ~ "Last consumed alcohol 12 months or more ago",
+                              ALCLTR7D == 6 ~ "Never consumed alcohol") %>% 
+           as.factor(),
+         ALCLTR3D = case_when(ALCLTR3D %in% c(0, 8, 9) ~ NA,
+                              ALCLTR3D == 1 ~ "Exceeded guidelines",
+                              ALCLTR3D == 2 ~ "Did not exceed guidelines",
+                              ALCLTR3D == 4 ~ "Last consumed alcohol 1 week to less than 12 months ago",
+                              ALCLTR3D == 5 ~ "Last consumed alcohol 12 months or more ago",
+                              ALCLTR3D == 6 ~ "Never consumed alcohol") %>% 
+           as.factor(),
+         DURSLP = case_when(DURSLP %in% c(0, 5) ~ NA,
+                            DURSLP == 1 ~ "Less than 1 month",
+                            DURSLP == 2 ~ "1 month to less than 3 months",
+                            DURSLP == 3 ~ "3 months to less than 6 months",
+                            DURSLP == 4 ~ "6 months or more",
+                            DURSLP == 9 ~ "Did not use") %>% as.factor(),
+         DURANX = case_when(DURANX %in% c(0, 5, 9) ~ NA,
+                            DURANX == 1 ~ "Less than 1 month",
+                            DURANX == 2 ~ "1 month to less than 3 months",
+                            DURANX == 3 ~ "3 months to less than 6 months",
+                            DURANX == 4 ~ "6 months or more",
+                            DURANX == 9 ~ "Did not use") %>% as.factor(),
+         DURTRAN = case_when(DURTRAN %in% c(0, 5, 9) ~ NA,
+                            DURTRAN == 1 ~ "Less than 1 month",
+                            DURTRAN == 2 ~ "1 month to less than 3 months",
+                            DURTRAN == 3 ~ "3 months to less than 6 months",
+                            DURTRAN == 4 ~ "6 months or more",
+                            DURTRAN == 9 ~ "Did not use") %>% as.factor(),
+         DURANTI = case_when(DURANTI %in% c(0, 5, 9) ~ NA,
+                            DURANTI == 1 ~ "Less than 1 month",
+                            DURANTI == 2 ~ "1 month to less than 3 months",
+                            DURANTI == 3 ~ "3 months to less than 6 months",
+                            DURANTI == 4 ~ "6 months or more",
+                            DURANTI == 9 ~ "Did not use") %>% as.factor(),
+         DURMOOD = case_when(DURMOOD %in% c(0, 5, 9) ~ NA,
+                            DURMOOD == 1 ~ "Less than 1 month",
+                            DURMOOD == 2 ~ "1 month to less than 3 months",
+                            DURMOOD == 3 ~ "3 months to less than 6 months",
+                            DURMOOD == 4 ~ "6 months or more",
+                            DURMOOD == 9 ~ "Did not use") %>% as.factor(),
+         DUROTH = case_when(DUROTH %in% c(0, 5, 9) ~ NA,
+                            DUROTH == 1 ~ "Less than 1 month",
+                            DUROTH == 2 ~ "1 month to less than 3 months",
+                            DUROTH == 3 ~ "3 months to less than 6 months",
+                            DUROTH == 4 ~ "6 months or more",
+                            DUROTH == 9 ~ "Did not use") %>% as.factor(),
+         FREQSLP = case_when(FREQSLP == 0 ~ NA,
+                             FREQSLP == 1 ~ "Every day and/or night",
+                             FREQSLP == 2 ~ "More than 3 days and/or nights a week",
+                             FREQSLP == 3 ~ "1-3 days and/or nights a week",
+                             FREQSLP == 4 ~ "Less than once a week",
+                             FREQSLP == 5 ~ "Varies/as required",
+                             FREQSLP == 9 ~ "Did not use") %>% as.factor(),
+         FREQANX = case_when(FREQANX == 0 ~ NA,
+                             FREQANX == 1 ~ "Every day and/or night",
+                             FREQANX == 2 ~ "More than 3 days and/or nights a week",
+                             FREQANX == 3 ~ "1-3 days and/or nights a week",
+                             FREQANX == 4 ~ "Less than once a week",
+                             FREQANX == 5 ~ "Varies/as required",
+                             FREQANX == 9 ~ "Did not use") %>% as.factor(),
+         FREQTRAN = case_when(FREQTRAN == 0 ~ NA,
+                             FREQTRAN == 1 ~ "Every day and/or night",
+                             FREQTRAN == 2 ~ "More than 3 days and/or nights a week",
+                             FREQTRAN == 3 ~ "1-3 days and/or nights a week",
+                             FREQTRAN == 4 ~ "Less than once a week",
+                             FREQTRAN == 5 ~ "Varies/as required",
+                             FREQTRAN == 9 ~ "Did not use") %>% as.factor(),
+         FREQANTI = case_when(FREQANTI == 0 ~ NA,
+                             FREQANTI == 1 ~ "Every day and/or night",
+                             FREQANTI == 2 ~ "More than 3 days and/or nights a week",
+                             FREQANTI == 3 ~ "1-3 days and/or nights a week",
+                             FREQANTI == 4 ~ "Less than once a week",
+                             FREQANTI == 5 ~ "Varies/as required",
+                             FREQANTI == 9 ~ "Did not use") %>% as.factor(),
+         FREQMOOD = case_when(FREQMOOD == 0 ~ NA,
+                             FREQMOOD == 1 ~ "Every day and/or night",
+                             FREQMOOD == 2 ~ "More than 3 days and/or nights a week",
+                             FREQMOOD == 3 ~ "1-3 days and/or nights a week",
+                             FREQMOOD == 4 ~ "Less than once a week",
+                             FREQMOOD == 5 ~ "Varies/as required",
+                             FREQMOOD == 9 ~ "Did not use") %>% as.factor(),
+         FREQOTH = case_when(FREQOTH == 0 ~ NA,
+                             FREQOTH == 1 ~ "Every day and/or night",
+                             FREQOTH == 2 ~ "More than 3 days and/or nights a week",
+                             FREQOTH == 3 ~ "1-3 days and/or nights a week",
+                             FREQOTH == 4 ~ "Less than once a week",
+                             FREQOTH == 5 ~ "Varies/as required",
+                             FREQOTH == 9 ~ "Did not use") %>% as.factor(),
+         PROXYAD = case_when(PROXYAD == 0 ~ NA,
+                             PROXYAD == 1 ~ "Answered by proxy, selected person present",
+                             PROXYAD == 2 ~ "Answered by proxy, selected person not present",
+                             PROXYAD == 3 ~ "Answered by selected person") %>% 
+           as.factor(),
+         EXREGUIC = case_when(EXREGUIC %in% c(0, 9) ~ NA,
+                              EXREGUIC == 1 ~ "Met recommended guidelines",
+                              EXREGUIC == 2 ~ "Did not meet recommended guidelines") %>% as.factor(),
+         SMKSTAT = case_when(SMKSTAT == 0 ~ NA,
+                             SMKSTAT == 1 ~ "Current smoker daily",
+                             SMKSTAT == 2 ~ "Current smoker weekly",
+                             SMKSTAT == 3 ~ "Current smoker less than weekly",
+                             SMKSTAT == 4 ~ "Ex-smoker",
+                             SMKSTAT == 5 ~ "Never smoked") %>% as.factor(),
+         SYSTOL = case_when(SYSTOL %in% c(0, 998, 999) ~ NA,
+                            TRUE ~ SYSTOL),
+         DIASTOL = case_when(DIASTOL %in% c(0, 998, 999) ~ NA,
+                            TRUE ~ DIASTOL),
+         SEX = case_when(SEX == 1 ~ "Male",
+                         SEX == 2 ~ "Female") %>% as.factor(),
+         MWBSQ02 = case_when(MWBSQ02 %in% c(0, 7, 8) ~ NA,
+                             MWBSQ02 == 1 ~ "All of the time",
+                             MWBSQ02 == 2 ~ "Most of the time",
+                             MWBSQ02 == 3 ~ "Some of the time",
+                             MWBSQ02 == 4 ~ "A little of the time",
+                             MWBSQ02 == 5 ~ "None of the time") %>% as.factor(),
+         MWBSQ03 = case_when(MWBSQ03 %in% c(0, 7, 8) ~ NA,
+                             MWBSQ03 == 1 ~ "All of the time",
+                             MWBSQ03 == 2 ~ "Most of the time",
+                             MWBSQ03 == 3 ~ "Some of the time",
+                             MWBSQ03 == 4 ~ "A little of the time",
+                             MWBSQ03 == 5 ~ "None of the time") %>% as.factor(),
+         MWBSQ04 = case_when(MWBSQ04 %in% c(0, 7, 8) ~ NA,
+                             MWBSQ04 == 1 ~ "All of the time",
+                             MWBSQ04 == 2 ~ "Most of the time",
+                             MWBSQ04 == 3 ~ "Some of the time",
+                             MWBSQ04 == 4 ~ "A little of the time",
+                             MWBSQ04 == 5 ~ "None of the time") %>% as.factor(),
+         MWBSQ05 = case_when(MWBSQ05 %in% c(0, 7, 8) ~ NA,
+                             MWBSQ05 == 1 ~ "All of the time",
+                             MWBSQ05 == 2 ~ "Most of the time",
+                             MWBSQ05 == 3 ~ "Some of the time",
+                             MWBSQ05 == 4 ~ "A little of the time",
+                             MWBSQ05 == 5 ~ "None of the time") %>% as.factor(),
+         MWBSQ06 = case_when(MWBSQ06 %in% c(0, 7, 8) ~ NA,
+                             MWBSQ06 == 1 ~ "All of the time",
+                             MWBSQ06 == 2 ~ "Most of the time",
+                             MWBSQ06 == 3 ~ "Some of the time",
+                             MWBSQ06 == 4 ~ "A little of the time",
+                             MWBSQ06 == 5 ~ "None of the time") %>% as.factor(),
+         MWBSQ07 = case_when(MWBSQ07 %in% c(0, 7, 8) ~ NA,
+                             MWBSQ07 == 1 ~ "All of the time",
+                             MWBSQ07 == 2 ~ "Most of the time",
+                             MWBSQ07 == 3 ~ "Some of the time",
+                             MWBSQ07 == 4 ~ "A little of the time",
+                             MWBSQ07 == 5 ~ "None of the time") %>% as.factor(),
+         MWBSQ08 = case_when(MWBSQ08 %in% c(0, 7, 8) ~ NA,
+                             MWBSQ08 == 1 ~ "All of the time",
+                             MWBSQ08 == 2 ~ "Most of the time",
+                             MWBSQ08 == 3 ~ "Some of the time",
+                             MWBSQ08 == 4 ~ "A little of the time",
+                             MWBSQ08 == 5 ~ "None of the time") %>% as.factor(),
+         MWBSQ09 = case_when(MWBSQ09 %in% c(0, 7, 8) ~ NA,
+                             MWBSQ09 == 1 ~ "All of the time",
+                             MWBSQ09 == 2 ~ "Most of the time",
+                             MWBSQ09 == 3 ~ "Some of the time",
+                             MWBSQ09 == 4 ~ "A little of the time",
+                             MWBSQ09 == 5 ~ "None of the time") %>% as.factor(),
+         MWBSQ10 = case_when(MWBSQ10 %in% c(0, 7, 8) ~ NA,
+                             MWBSQ10 == 1 ~ "All of the time",
+                             MWBSQ10 == 2 ~ "Most of the time",
+                             MWBSQ10 == 3 ~ "Some of the time",
+                             MWBSQ10 == 4 ~ "A little of the time",
+                             MWBSQ10 == 5 ~ "None of the time") %>% as.factor(),
+         MWBSQ11 = case_when(MWBSQ11 %in% c(0, 7, 8) ~ NA,
+                             MWBSQ11 == 1 ~ "All of the time",
+                             MWBSQ11 == 2 ~ "Most of the time",
+                             MWBSQ11 == 3 ~ "Some of the time",
+                             MWBSQ11 == 4 ~ "A little of the time",
+                             MWBSQ11 == 5 ~ "None of the time") %>% as.factor(),
+         AGEMTHS2 = na_if(AGEMTHS2, 99),
+         IDDAYWK = case_when(IDDAYWK == 1 ~ "Sunday",
+                             IDDAYWK == 2 ~ "Monday",
+                             IDDAYWK == 3 ~ "Tuesday",
+                             IDDAYWK == 4 ~ "Wednesday",
+                             IDDAYWK == 5 ~ "Thursday",
+                             IDDAYWK == 6 ~ "Friday",
+                             IDDAYWK == 7 ~ "Saturday") %>% as.factor(),
+         PROXYCH = case_when(PROXYCH == 0 ~ NA,
+                             PROXYCH == 1 ~ "Answered by proxy",
+                             PROXYCH == 2 ~ "Not answered by proxy") %>% as.factor(),
+         PROFENG = case_when(PROFENG %in% c(0, 9) ~ NA,
+                              PROFENG == 1 ~ "Very well",
+                              PROFENG == 2 ~ "Well",
+                              PROFENG == 3 ~ "Not well",
+                              PROFENG == 4 ~ "Not at all",
+                              PROFENG == 5 ~ "Mainly speaks English") %>% as.factor(),
+         EDATTQ2 = case_when(EDATTQ2 == 0 ~ NA,
+                             EDATTQ2 == 1 ~ "Has non-school qualification",
+                             EDATTQ2 == 2 ~ "Does not have non-school qualification") 
+         %>% as.factor(),
+         STDYFTPT = case_when(STDYFTPT == 0 ~ NA,
+                              STDYFTPT == 1 ~ "Studying full-time",
+                              STDYFTPT == 2 ~ "Studying part-time",
+                              STDYFTPT == 3 ~ "Not studying") %>% as.factor(),
+         MORE1JB = case_when(MORE1JB == 0 ~ NA,
+                             MORE1JB == 1 ~ "Has more than one job/business",
+                             MORE1JB == 2 ~ "Has one job/business") %>% as.factor(),
+         EMPABS = case_when(EMPABS == 0 ~ NA,
+                            EMPABS == 1 ~ "Holiday/flextime/study/personal reasons",
+                            EMPABS == 2 ~ "Own illness or injury/sick leave",
+                            EMPABS == 3 ~ "No work available/not enough work",
+                            EMPABS == 4 ~ "Standard work arrangements/shift work",
+                            EMPABS == 5 ~ "On strike/locked out/industrial dispute",
+                            EMPABS == 6 ~ "Stood down",
+                            EMPABS == 7 ~ "Bad weather/paint breakdown",
+                            EMPABS == 8 ~ "Other") %>% as.factor(),
+         HEALFCS = case_when(HEALFCS %in% c(0, 4) ~ NA,
+                             HEALFCS == 1 ~ "Last two weeks",
+                             HEALFCS == 2 ~ "Two weeks to twelve months",
+                             HEALFCS == 3 ~ "More than twelve months/never") %>% 
+           as.factor(),
+         HEALFGP = case_when(HEALFGP == 9 ~ NA,
+                             HEALFGP == 1 ~ "Last two weeks",
+                             HEALFGP == 2 ~ "Two weeks to less than 3 months",
+                             HEALFGP == 3 ~ "3 to 6 months",
+                             HEALFGP == 4 ~ "6 to 9 months",
+                             HEALFGP == 5 ~ "9 to 12 months",
+                             HEALFGP == 6 ~ "1 year to 2 years",
+                             HEALFGP == 7 ~ "More than 2 years",
+                             HEALFGP == 8 ~ "Never") %>% as.factor(),
+         HEALFLI = case_when(HEALFLI %in% c(0, 3) ~ NA,
+                             HEALFLI == 1 ~ "Discussed lifestyle issue",
+                             HEALFLI == 2 ~ "Did not discuss lifestyle issue") %>% 
+           as.factor(),
+         HEALLSIA = na_if(HEALLSIA, 8),
+         HEALLSI = pmap(list(HEALLSIA, HEALLSIB, HEALLSIC, HEALLSID,
+                             HEALLSIE, HEALLSIF, HEALLSIG),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             })
+         ) %>% select(-c(HEALLSIA:HEALLSIG)) %>% 
+  mutate(HEAPAROX = case_when(HEAPAROX == 0 ~ NA,
+                              HEAPAROX == 1 ~ "Parent/proxy answered questions",
+                              HEAPAROX == 2 ~ "Parent/guardian present for all health service use questions",
+                              HEAPAROX == 3 ~ "Parent/guardian present for some health service use questions",
+                              HEAPAROX == 4 ~ "Parent/guardian not present for health service use questions",
+                              HEAPAROX == 5 ~ "Did not see GP in last 12 months") %>% 
+           as.factor(),
+         HEALTCD = case_when(HEALTCD %in% c(0, 8) ~ NA,
+                             HEALTCD == 1 ~ "Less than 3 months",
+                             HEALTCD == 2 ~ "3 to 6 months",
+                             HEALTCD == 3 ~ "6 to 9 months",
+                             HEALTCD == 4 ~ "9 to 12 months",
+                             HEALTCD == 5 ~ "1 year to 2 years",
+                             HEALTCD == 6 ~ "More than 2 years",
+                             HEALTCD == 7 ~ "Never") %>% as.factor(),
+         HEALDFS = na_if(HEALDFS, 99),
+         HEALDSC = na_if(HEALDSC, 99),
+         HEALTWI = case_when(HEALTWI == 0 ~ NA,
+                             HEALTWI == 1 ~ "Had time off work for own illness/injury",
+                             HEALTWI == 2 ~ "Did not have time off work for own illness/injury") %>% as.factor(),
+         HEALDWI = na_if(HEALDWI, 99),
+         HEALDWC = na_if(HEALDWC, 99),
+         PAINBOD = case_when(PAINBOD %in% c(0, 8, 9) ~ NA,
+                             PAINBOD == 1 ~ "None",
+                             PAINBOD == 2 ~ "Very mild",
+                             PAINBOD == 3 ~ "Mild",
+                             PAINBOD == 4 ~ "Moderate",
+                             PAINBOD == 5 ~ "Severe",
+                             PAINBOD == 6 ~ "Very severe") %>% as.factor(),
+         MWBPAINT = case_when(MWBPAINT %in% c(0, 8, 9) ~ NA,
+                              MWBPAINT %in% c(1, 6) ~ "Not at all",
+                              MWBPAINT == 2 ~ "A little bit",
+                              MWBPAINT == 3 ~ "Moderately",
+                              MWBPAINT == 4 ~ "Quite a bit",
+                              MWBPAINT == 5 ~ "Extremely") %>% as.factor(),
+         DISABA = na_if(DISABA, 7),
+         DISAB = pmap(list(DISABA, DISABB, DISABC, DISABD, DISABE, DISABF),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             })
+         ) %>% select(-c(DISABA:DISABF)) %>% 
+  mutate(DISSTAT = case_when(DISSTAT == 1 ~ "Has profound core activity limitation",
+                             DISSTAT == 2 ~ "Has severe core activity limitation",
+                             DISSTAT == 3 ~ "Has moderate core activity limitation",
+                             DISSTAT == 4 ~ "Has mild core activity limitation",
+                             DISSTAT == 5 ~ "Has a schooling/employment restriction only",
+                             DISSTAT == 6 ~ "Has no limitation or specific restriction",
+                             DISSTAT == 7 ~ "Has no disability or long-term health condition") %>% as.factor(),
+         DISEDIF = case_when(DISEDIF == 0 ~ NA,
+                             DISEDIF == 1 ~ "Has an education restriction",
+                             DISEDIF == 2 ~ "Has no education restriction") %>% 
+           as.factor(),
+         DISEDITA = na_if(DISEDITA, 6),
+         DISEDIT = pmap(list(DISEDITA, DISEDITB, DISEDITC, DISEDITD),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             })
+         ) %>% select(-c(DISEDITA:DISEDITD)) %>% 
+  mutate(DISEMIF = case_when(DISEMIF == 0 ~ NA,
+                             DISEMIF == 1 ~ "Has an employment restriction",
+                             DISEMIF == 2 ~ "Has no employment restriction") %>% 
+           as.factor(),
+         DISEMITA = na_if(DISEMITA, 7),
+         DISEMIT = pmap(list(DISEMITA, DISEMITB, DISEMITC, DISEMITD, DISEMITE),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             })
+         ) %>% select(-c(DISEMITA:DISEMITE)) %>% 
+  mutate(SABDYMS = case_when(SABDYMS %in% c(0, 8, 9) ~ NA,
+                             SABDYMS == 1 ~ "Acceptable weight",
+                             SABDYMS == 2 ~ "Underweight",
+                             SABDYMS == 3 ~ "Overweight",
+                             SABDYMS == 4 ~ "Currently pregnant") %>% as.factor(),
+         BDYMSQ2A = case_when(BDYMSQ2A == 0 ~ NA,
+                              BDYMSQ2A == 1 ~ "Increased body mass",
+                              BDYMSQ2A == 2 ~ "Decreased body mass",
+                              BDYMSQ2A == 3 ~ "Stayed the same",
+                              BDYMSQ2A == 4 ~ "Currently pregnant") %>% as.factor(),
+         EXLEVELW = case_when(EXLEVELW %in% c(0, 8) ~ NA,
+                              EXLEVELW == 1 ~ "High",
+                              EXLEVELW == 2 ~ "Moderate",
+                              EXLEVELW == 3 ~ "Low",
+                              EXLEVELW == 4 ~ "Very low",
+                              EXLEVELW == 5 ~ "No exercise") %>% as.factor(),
+         EXLEVELN = case_when(EXLEVELN %in% c(0, 8) ~ NA,
+                              EXLEVELN == 1 ~ "High",
+                              EXLEVELN == 2 ~ "Moderate",
+                              EXLEVELN == 3 ~ "Low",
+                              EXLEVELN == 4 ~ "Very low",
+                              EXLEVELN == 5 ~ "No exercise") %>% as.factor(),
+         EXNUDAYW = case_when(EXNUDAYW == 0 ~ NA,
+                              EXNUDAYW == 1 ~ "One",
+                              EXNUDAYW == 2 ~ "Two",
+                              EXNUDAYW == 3 ~ "Three",
+                              EXNUDAYW == 4 ~ "Four",
+                              EXNUDAYW == 5 ~ "Five",
+                              EXNUDAYW == 6 ~ "Six",
+                              EXNUDAYW == 7 ~ "Seven",
+                              EXNUDAYW == 8 ~ "Zero") %>% as.factor(),
+         EXNUDTH = case_when(EXNUDTH == 9 ~ NA,
+                              EXNUDTH == 1 ~ "One",
+                              EXNUDTH == 2 ~ "Two",
+                              EXNUDTH == 3 ~ "Three",
+                              EXNUDTH == 4 ~ "Four",
+                              EXNUDTH == 5 ~ "Five",
+                              EXNUDTH == 6 ~ "Six",
+                              EXNUDTH == 7 ~ "Seven",
+                              EXNUDTH %in% c(0, 8) ~ "Zero") %>% as.factor(),
+         EXTYPELW = case_when(EXTYPELW %in% c(0, 9) ~ NA,
+                              EXTYPELW == 1 ~ "No exercise",
+                              EXTYPELW == 2 ~ "Walking only",
+                              EXTYPELW == 3 ~ "Moderate only",
+                              EXTYPELW == 4 ~ "Vigorous only",
+                              EXTYPELW == 5 ~ "Walking and moderate",
+                              EXTYPELW == 6 ~ "Walking and vigorous",
+                              EXTYPELW == 7 ~ "Moderate and vigorous",
+                              EXTYPELW == 8 ~ "Walking, moderate and vigorous") %>% 
+           as.factor(),
+         PHYAW = case_when(PHYAW %in% c(0, 5) ~ NA,
+                           PHYAW == 1 ~ "Mostly sitting",
+                           PHYAW == 2 ~ "Mostly standing",
+                           PHYAW == 3 ~ "Mostly walking",
+                           PHYAW == 4 ~ "Mostly heavy labour or physically demanding work") %>% as.factor(),
+         EMPSEDM = case_when(EMPSEDM %in% c(9996, 9999) ~ NA,
+                             TRUE ~ EMPSEDM),
+         SEDDAYM = case_when(SEDDAYM %in% c(9996, 9999) ~ NA,
+                             TRUE ~ SEDDAYM),
+         DURSACSF = case_when(DURSACSF %in% c(0, 8) ~ NA,
+                              DURSACSF == 1 ~ "Inactive",
+                              DURSACSF == 2 ~ "Insufficiently active",
+                              DURSACSF == 3 ~ "Sufficiently active for health") %>% 
+           as.factor(),
+         EXREGUID = case_when(EXREGUID %in% c(0, 9) ~ NA,
+                              EXREGUID == 1 ~ "Met recommended guidelines",
+                              EXREGUID == 2 ~ "Did not meet recommended guidelines")
+         %>% as.factor(),
+         CHBRFF = case_when(CHBRFF %in% c(0, 4) ~ NA,
+                            CHBRFF == 1 ~ "Breast milk",
+                            CHBRFF == 2 ~ "Infant formula",
+                            CHBRFF == 3 ~ "Other") %>% as.factor(),
+         CHBRMG = case_when(CHBRMG %in% c(0, 4) ~ NA,
+                            CHBRMG == 1 ~ "Aged less than 6 months",
+                            CHBRMG == 2 ~ "Not exclusively breastfed until 6 months",
+                            CHBRMG == 3 ~ "Exclusively breastfed until 6 months") %>% 
+           as.factor(),
+         CHBRMGS = case_when(CHBRMGS %in% c(0, 5) ~ NA,
+                             CHBRMGS == 1 ~ "Aged less than 12 months",
+                             CHBRMGS == 2 ~ "Not exclusively breastfed until 6 months",
+                             CHBRMGS == 3 ~ "Exclusively breastfed until 6 months (without continued breastfeeding to 12 months)",
+                             CHBRMGS == 4 ~ "Exclusively breastfed until 6 months with continued breastfeeding to 12 months") %>% as.factor(),
+         CHBRTPA = na_if(CHBRTPA, 97),
+         CHBRTP = pmap(list(CHBRTPA, CHBRTPB, CHBRTPC, CHBRTPD,
+                            CHBRTPE, CHBRTPF, CHBRTPG, CHBRTPH, CHBRTPI),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             })
+         ) %>% select(-c(CHBRTPA:CHBRTPI))
+```
+
+```{r}
+nhs8.data.cont = nhs8.data %>% 
+   mutate(EXBRST = case_when(EXBRST %in% c(96, 97) ~ NA,
+                            EXBRST == 95 ~ "Currently exclusively breastfeeding",
+                            EXBRST == 98 ~ "Never received breast milk",
+                            EXBRST == 0 ~ "Less than 1 month",
+                            EXBRST < 12 ~ "1 month to less than 12 months",
+                            EXBRST < 24 ~ "1 year to less than 2 years",
+                            EXBRST >= 24 ~ "2 years and up") %>%
+           as.factor(),
+         EXBRSA = case_when(EXBRSA %in% c(96, 97) ~ NA,
+                            EXBRSA == 98 ~ "Never received breast milk",
+                            EXBRSA == 0 ~ "Less than 1 month",
+                            EXBRSA < 12 ~ "1 month to less than 12 months",
+                            EXBRSA < 24 ~ "1 year to less than 2 years",
+                            EXBRSA >= 24 ~ "2 years and up") %>%
+           as.factor(),
+         CHBRAO = case_when(CHBRAO %in% c(96, 97) ~ NA,
+                            CHBRAO == 98 ~ "Only had breast milk",
+                            CHBRAO == 0 ~ "Less than 1 month",
+                            CHBRAO < 12 ~ "1 month to less than 12 months",
+                            CHBRAO < 24 ~ "1 year to less than 2 years",
+                            CHBRAO >= 24 ~ "2 years and up") %>%
+           as.factor(),
+         CHBRRB = case_when(CHBRRB %in% c(0, 4) ~ NA,
+                            CHBRRB == 1 ~ "Received breast milk",
+                            CHBRRB == 2 ~ "Never received breast milk") %>% 
+           as.factor(),
+         CHBRCR = case_when(CHBRCR %in% c(0, 4) ~ NA,
+                            CHBRCR == 1 ~ "Currently receiving breast milk",
+                            CHBRCR == 2 ~ "Not currently receiving breast milk",
+                            CHBRCR == 3 ~ "Never received breast milk") %>% 
+           as.factor(),
+         CHBRSR = case_when(CHBRSR %in% c(96, 97) ~ NA,
+                            CHBRSR == 95 ~ "Currently breastfeeding",
+                            CHBRSR == 98 ~ "Only had breast milk",
+                            CHBRSR == 0 ~ "Less than 1 month",
+                            CHBRSR < 12 ~ "1 month to less than 12 months",
+                            CHBRSR < 24 ~ "1 year to less than 2 years",
+                            CHBRSR >= 24 ~ "2 years and up") %>% as.factor(),
+         CHBRAF = case_when(CHBRAF %in% c(95, 97) ~ NA,
+                            CHBRAF == 96 ~ "Has not had infant formula",
+                            CHBRAF == 0 ~ "Less than 1 month",
+                            CHBRAF < 12 ~ "1 month to less than 12 months",
+                            CHBRAF < 24 ~ "1 year to less than 2 years",
+                            CHBRAF >= 24 ~ "2 years and up") %>% as.factor(),
+         CHBRAC = case_when(CHBRAC %in% c(95, 97) ~ NA,
+                            CHBRAC == 96 ~ "Has not had cow's milk",
+                            CHBRAC == 0 ~ "Less than 1 month",
+                            CHBRAC < 12 ~ "1 month to less than 12 months",
+                            CHBRAC < 24 ~ "1 year to less than 2 years",
+                            CHBRAC >= 24 ~ "2 years and up") %>% as.factor(),
+         SMKSTOP = case_when(SMKSTOP == 0 ~ NA,
+                             SMKSTOP == 1 ~ "Stopped smoking daily",
+                             SMKSTOP == 2 ~ "Did not stop smoking daily",
+                             SMKSTOP == 3 ~ "Did not smoke daily in last 12 months")
+         %>% as.factor(),
+         SMKPAROX = case_when(SMKPAROX == 0 ~ NA,
+                              SMKPAROX == 1 ~ "Parent/proxy answered questions",
+                              SMKPAROX == 2 ~ "Parent present for all smoking questions",
+                              SMKPAROX == 3 ~ "Parent present for some smoking questions",
+                              SMKPAROX == 4 ~ "Parent not present for smoking questions") %>% as.factor(),
+         SMKDAILY = case_when(SMKDAILY == 0 ~ NA,
+                              SMKDAILY == 1 ~ "Current daily smoker",
+                              SMKDAILY == 2 ~ "Past daily smoker (still smokes)",
+                              SMKDAILY == 3 ~ "Past daily smoker (ex-smoker)",
+                              SMKDAILY == 4 ~ "Never smoked daily",
+                              SMKDAILY == 5 ~ "Never smoked") %>% as.factor(),
+         SMOKE13A = case_when(SMOKE13A == 0 ~ NA,
+                              SMOKE13A == 1 ~ "Increased",
+                              SMOKE13A == 2 ~ "Decreased",
+                              SMOKE13A == 3 ~ "Stayed the same") %>% as.factor(),
+         SMKTCNI = case_when(SMKTCNI == 0 ~ NA,
+                             SMKTCNI == 1 ~ "Daily smoker",
+                             SMKTCNI == 2 ~ "Non-daily smoker") %>% as.factor(),
+         SMKTCED = case_when(SMKTCED == 0 ~ NA,
+                             SMKTCED == 1 ~ "Daily smoker",
+                             SMKTCED == 2 ~ "Non-daily smoker who had smoked daily",
+                             SMKTCED == 3 ~ "Non-daily smoker who had not smoked daily") %>% as.factor(),
+         DIETRDI = case_when(DIETRDI %in% c(0, 3) ~ NA,
+                             DIETRDI == 1 ~ "Met recommended guidelines",
+                             DIETRDI == 2 ~ "Did not meet recommended guidelines") %>% 
+           as.factor(),
+         MILKFATU = case_when(MILKFATU %in% c(0, 4) ~ NA,
+                              MILKFATU == 1 ~ "Whole milk/regular/full cream",
+                              MILKFATU == 2 ~ "Reduced fat",
+                              MILKFATU == 3 ~ "Skim",
+                              MILKFATU == 5 ~ "Doesn't drink milk") %>% as.factor(),
+         SALTACI = case_when(SALTACI %in% c(0, 4, 5) ~ NA,
+                             SALTACI == 1 ~ "Cooking salt is iodised",
+                             SALTACI == 2 ~ "Cooking salt is not iodised",
+                             SALTACI == 3 ~ "Cooking salt is not added to meal") %>% 
+           as.factor(),
+         SALTATI = case_when(SALTATI %in% c(0, 4, 5) ~ NA,
+                             SALTATI == 1 ~ "Table salt is iodised",
+                             SALTATI == 2 ~ "Table salt is not iodised",
+                             SALTATI == 3 ~ "Table salt is not added to meal") %>% 
+           as.factor(),
+         ALCDYWA = na_if(ALCDYWA, 9),
+         ALCDYW = pmap(list(ALCDYWA, ALCDYWB, ALCDYWC, ALCDYWD, 
+                            ALCDYWE, ALCDYWF, ALCDYWG),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             })
+         ) %>% select(-c(ALCDYWA:ALCDYWG)) %>% 
+  mutate(ALCDAYS = na_if(ALCDAYS, 9),
+         ALCPAROX = case_when(ALCPAROX == 0 ~ NA,
+                              ALCPAROX == 1 ~ "Parent/proxy answered all questions",
+                              ALCPAROX == 2 ~ "Parent present for all alcohol questions",
+                              ALCPAROX == 3 ~ "Present present for some alcohol questions",
+                              ALCPAROX == 4 ~ "Parent not present for alcohol questions") %>% as.factor(),
+         ALCMPRSN = case_when(ALCMPRSN %in% c(0, 8) ~ NA,
+                              ALCMPRSN == 1 ~ "More than most weeks",
+                              ALCMPRSN == 2 ~ "About the same as most weeks",
+                              ALCMPRSN == 3 ~ "Less than most weeks") %>% as.factor(),
+         ALCSTRAO = case_when(ALCSTRAO %in% c(0, 9) ~ NA,
+                              ALCSTRAO == 1 ~ "Exceeded (11 or more)",
+                              ALCSTRAO == 2 ~ "Exceeded (7 or more)",
+                              ALCSTRAO %in% c(3, 4) ~ "Exceeded (5 or more)",
+                              ALCSTRAO == 5 ~ "Did not exceed (5 or more)",
+                              ALCSTRAO == 6 ~ "Did not exceed (3 or more)",
+                              ALCSTRAO == 7 ~ "Did not consume alcohol in last 12 months",
+                              ALCSTRAO == 8 ~ "Never consumed alcohol") %>%
+           as.factor(),
+         ALCF11 = case_when(ALCF11 %in% c(97, 98, 99) ~ NA,
+                            ALCF11 == 0 ~ "Nil in the last 12 months",
+                            ALCF11 == 1 ~ "Everyday",
+                            ALCF11 == 2 ~ "6 days a week",
+                            ALCF11 == 3 ~ "5 days a week",
+                            ALCF11 == 4 ~ "4 days a week",
+                            ALCF11 == 5 ~ "3 days a week",
+                            ALCF11 == 6 ~ "2 days a week",
+                            ALCF11 == 7 ~ "1 day a week",
+                            ALCF11 == 8 ~ "25 to 51 times in a year",
+                            ALCF11 == 9 ~ "13 to 24 times in a year",
+                            ALCF11 == 10 ~ "1 to 12 times in a year") %>% as.factor(),
+         ALCF11C = case_when(ALCF11C %in% c(997, 998, 999) ~ NA,
+                             TRUE ~ ALCF11C),
+         ALCF7 = case_when(ALCF7 %in% c(97, 98, 99) ~ NA,
+                            ALCF7 == 0 ~ "Nil in the last 12 months",
+                            ALCF7 == 1 ~ "Everyday",
+                            ALCF7 == 2 ~ "6 days a week",
+                            ALCF7 == 3 ~ "5 days a week",
+                            ALCF7 == 4 ~ "4 days a week",
+                            ALCF7 == 5 ~ "3 days a week",
+                            ALCF7 == 6 ~ "2 days a week",
+                            ALCF7 == 7 ~ "1 day a week",
+                            ALCF7 == 8 ~ "25 to 51 times in a year",
+                            ALCF7 == 9 ~ "13 to 24 times in a year",
+                            ALCF7 == 10 ~ "1 to 12 times in a year") %>% as.factor(),
+         ALCF7C = case_when(ALCF7C %in% c(997, 998, 999) ~ NA,
+                             TRUE ~ ALCF7C),
+         ALCF5 = case_when(ALCF5 %in% c(97, 98, 99) ~ NA,
+                            ALCF5 == 0 ~ "Nil in the last 12 months",
+                            ALCF5 == 1 ~ "Everyday",
+                            ALCF5 == 2 ~ "6 days a week",
+                            ALCF5 == 3 ~ "5 days a week",
+                            ALCF5 == 4 ~ "4 days a week",
+                            ALCF5 == 5 ~ "3 days a week",
+                            ALCF5 == 6 ~ "2 days a week",
+                            ALCF5 == 7 ~ "1 day a week",
+                            ALCF5 == 8 ~ "25 to 51 times in a year",
+                            ALCF5 == 9 ~ "13 to 24 times in a year",
+                            ALCF5 == 10 ~ "1 to 12 times in a year") %>% as.factor(),
+         ALCF5C = case_when(ALCF5C %in% c(997, 998, 999) ~ NA,
+                             TRUE ~ ALCF5C),
+         ALCF3 = case_when(ALCF3 %in% c(97, 98, 99) ~ NA,
+                            ALCF3 == 0 ~ "Nil in the last 12 months",
+                            ALCF3 == 1 ~ "Everyday",
+                            ALCF3 == 2 ~ "6 days a week",
+                            ALCF3 == 3 ~ "5 days a week",
+                            ALCF3 == 4 ~ "4 days a week",
+                            ALCF3 == 5 ~ "3 days a week",
+                            ALCF3 == 6 ~ "2 days a week",
+                            ALCF3 == 7 ~ "1 day a week",
+                            ALCF3 == 8 ~ "25 to 51 times in a year",
+                            ALCF3 == 9 ~ "13 to 24 times in a year",
+                            ALCF3 == 10 ~ "1 to 12 times in a year") %>% as.factor(),
+         ALCF3C = case_when(ALCF3C %in% c(997, 998, 999) ~ NA,
+                             TRUE ~ ALCF3C),
+         ALCSTR01 = case_when(ALCSTR01 %in% c(0, 7) ~ NA,
+                              ALCSTR01 == 1 ~ "High risk",
+                              ALCSTR01 == 2 ~ "UTD high risk",
+                              ALCSTR01 == 3 ~ "Risky",
+                              ALCSTR01 == 4 ~ "UTD risky",
+                              ALCSTR01 == 5 ~ "Low risk",
+                              ALCSTR01 == 6 ~ "UTD low risk",
+                              ALCSTR01 == 8 ~ "Did not consume alcohol in last 12 months",
+                              ALCSTR01 == 9 ~ "Never consumed alcohol") %>% as.factor(),
+         ASTHQ21E = case_when(ASTHQ21E == 9 ~ NA,
+                              ASTHQ21E == 0 ~ "None",
+                              ASTHQ21E == 1 ~ "One",
+                              ASTHQ21E == 2 ~ "Two",
+                              ASTHQ21E == 3 ~ "Three",
+                              ASTHQ21E == 4 ~ "Four",
+                              ASTHQ21E == 5 ~ "Five or more") %>% as.factor(),
+         ASTHQ30E = case_when(ASTHQ30E == 9 ~ NA,
+                              ASTHQ30E == 0 ~ "None",
+                              ASTHQ30E == 1 ~ "One",
+                              ASTHQ30E == 2 ~ "Two",
+                              ASTHQ30E == 3 ~ "Three",
+                              ASTHQ30E == 4 ~ "Four",
+                              ASTHQ30E == 5 ~ "Five or more") %>% as.factor(),
+         CHOL5YR = case_when(CHOL5YR %in% c(0, 6, 8) ~ NA,
+                             CHOL5YR == 1 ~ "Has had cholesterol checked within the last 5 years",
+                             CHOL5YR == 5 ~ "Has not had cholesterol checked within the last 5 years") %>% as.factor(),
+         CHOLEST = case_when(CHOLEST %in% c(0, 8, 9) ~ NA,
+                             CHOLEST == 1 ~ "Cholestrol checked in last 12 months",
+                             CHOLEST == 2 ~ "Cholesterol checked more than 12 months ago but within last 5 years",
+                             CHOLEST == 3 ~ "Cholestrol not checked in last 5 years") 
+         %>% as.factor(),
+         BPWHO = case_when(BPWHO %in% c(0, 5, 8) ~ NA,
+                           BPWHO == 1 ~ "General practitioner",
+                           BPWHO == 2 ~ "Specialist",
+                           BPWHO %in% c(3, 4) ~ "Other") %>% as.factor(),
+         BPCHK = case_when(BPCHK %in% c(0, 8, 9) ~ NA,
+                           BPCHK == 1 ~ "Blood pressure checked in last 12 months",
+                           BPCHK == 2 ~ "Blood pressure checked more than 12 months ago but within last 2 years",
+                           BPCHK == 3 ~ "3Blood pressure not checked in last 2 years")
+         %>% as.factor(),
+         CARSBPS = case_when(CARSBPS %in% c(0, 6, 8) ~ NA,
+                             CARSBPS == 1 ~ "Checked own blood pressure in last 12 months",
+                             CARSBPS == 5 ~ "Did not check own blood pressure in last 12 months") %>% as.factor(),
+         CARDASP = case_when(CARDASP %in% c(0, 6, 8) ~ NA,
+                             CARDASP == 1 ~ "Aspirin used daily for heart or circulatory condition",
+                             CARDASP == 5 ~ "Aspirin not used daily for heart or circulatory condition") %>% as.factor(),
+         TDARTHA = na_if(TDARTHA, 97),
+         TDARTH = pmap(list(TDARTHA, TDARTHB, TDARTHC, TDARTHD, 
+                            TDARTHE, TDARTHF, TDARTHG, TDARTHH),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             }),
+         MSKAACTA = na_if(MSKAACTA, 97),
+         MSKAACT = pmap(list(MSKAACTA, MSKAACTB, MSKAACTC, MSKAACTD, 
+                            MSKAACTE, MSKAACTF, MSKAACTG, MSKAACTH),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             }),
+         ) %>% select(-c(TDARTHA:MSKAACTH)) %>% 
+  mutate(MSKBDEN = case_when(MSKBDEN %in% c(0, 4, 5) ~ NA,
+                             MSKBDEN == 1 ~ "Bone density tested in last 2 years",
+                             MSKBDEN == 2 ~ "Bone density tested more than 2 years ago",
+                             MSKBDEN == 3 ~ "Bone density not tested") %>% as.factor(),
+         DBACTIOA = case_when(DBACTIOA %in% c(9, 97) ~ NA,
+                              TRUE ~ DBACTIOA),
+         DBACTIO = pmap(list(DBACTIOA, DBACTIOB, DBACTIOC, DBACTIOD, 
+                            DBACTIOE, DBACTIOF, DBACTIOG),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             }),
+         ) %>% select(-c(DBACTIOA:DBACTIOG)) %>% 
+  mutate(DBCHANG = case_when(DBCHANG %in% c(0, 8) ~ NA,
+                             DBCHANG == 1 ~ "Currently following changed eating pattern or diet because of diabetes or high sugar levels",
+                             DBCHANG == 2 ~ "Has changed eating pattern or diet because of diabetes or high sugar levels but not currently",
+                             DBCHANG == 3 ~ "Has not changed eating pattern or diet because of diabetes or high sugar levels") %>% as.factor(),
+         DIALYSIS = case_when(DIALYSIS == 1 ~ "Has had dialysis",
+                              DIALYSIS == 5 ~ "Has not had dialysis") %>% as.factor(),
+         MHCMEDA = case_when(MHCMEDA %in% c(8, 9) ~ NA,
+                             TRUE ~ MHCMEDA),
+         MHCMED = pmap(list(MHCMEDA, MHCMEDB, MHCMEDC, MHCMEDD, 
+                            MHCMEDE, MHCMEDF),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             }),
+         ) %>% select(-c(MHCMEDA:MHCMEDF)) %>% 
+  mutate(NUMBLOOD = case_when(NUMBLOOD == 0 ~ NA,
+                              NUMBLOOD == 1 ~ "One",
+                              NUMBLOOD == 2 ~ "Two",
+                              NUMBLOOD == 3 ~ "Three",
+                              NUMBLOOD == 4 ~ "Not taken") %>% as.factor(),
+         BPCAT = case_when(BPCAT %in% c(0, 6, 7) ~ NA,
+                           BPCAT == 1 ~ "Normal",
+                           BPCAT == 2 ~ "Normal - high",
+                           BPCAT == 3 ~ "High",
+                           BPCAT == 4 ~ "Very high",
+                           BPCAT == 5 ~ "Severe") %>% as.factor(),
+         MWBPSYRA = na_if(MWBPSYRA, 97),
+         # Won't remove not stated here, I think that itself is information
+         MWBPSYR = pmap(list(MWBPSYRA, MWBPSYRB, MWBPSYRC, MWBPSYRD, 
+                            MWBPSYRE, MWBPSYRF, MWBPSYRG, MWBPSYRH,
+                            MWBPSYRI, MWBPSYRJ, MWBPSYRK, MWBPSYRL,
+                            MWBPSYRM, MWBPSYRN, MWBPSYRO, MWBPSYRP),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             }),
+         ) %>% select(-c(MWBPSYRA:MWBPSYRP)) %>% 
+  mutate(PHITYPM = case_when(PHITYPM %in% c(0, 8, 9) ~ NA,
+                             PHITYPM == 1 ~ "Family",
+                             PHITYPM == 2 ~ "Couple",
+                             PHITYPM == 3 ~ "Sole parent",
+                             PHITYPM == 4 ~ "Single",
+                             PHITYPM == 5 ~ "Without private health insurance") %>% 
+           as.factor(),
+         PHITYPC = case_when(PHITYPC %in% c(0, 4, 9) ~ NA,
+                             PHITYPC == 1 ~ "Hospital cover only",
+                             PHITYPC == 2 ~ "Ancillary cover only",
+                             PHITYPC == 3 ~ "Both hospital and ancillary cover",
+                             PHITYPC == 5 ~ "Without private health insurance") %>% 
+           as.factor(),
+         RNCPHIL = na_if(RNCPHIL, 12),
+         RNCPHI = pmap(list(RNCPHIA, RNCPHIB, RNCPHIC, RNCPHID, 
+                            RNCPHIE, RNCPHIF, RNCPHIG, RNCPHIH,
+                            RNCPHII, RNCPHIJ, RNCPHIK, RNCPHIL),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             }),
+         ) %>% select(-c(RNCPHIA:RNCPHIL)) %>% 
+  mutate(RPHICVRA = na_if(RPHICVRA, 13),
+         RPHICVR = pmap(list(RPHICVRA, RPHICVRB, RPHICVRC, RPHICVRD, 
+                            RPHICVRE, RPHICVRF, RPHICVRG, RPHICVRH,
+                            RPHICVRI, RPHICVRJ, RPHICVRK, RPHICVRL, RPHICVRM),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             }),
+         ) %>% select(-c(RPHICVRA:RPHICVRM)) %>% 
+  mutate(SHIFTQ2 = case_when(SHIFTQ2 == 0 ~ NA,
+                             SHIFTQ2 == 1 ~ "Did shift work in the last 4 weeks",
+                             SHIFTQ2 == 5 ~ "Did not do shift work in the last 4 weeks") 
+         %>% as.factor(),
+         SF12Q2 = case_when(SF12Q2 == 0 ~ NA,
+                            SF12Q2 == 1 ~ "Excellent",
+                            SF12Q2 == 2 ~ "Very good",
+                            SF12Q2 == 3 ~ "Good",
+                            SF12Q2 == 4 ~ "Fair",
+                            SF12Q2 == 5 ~ "Poor") %>% as.factor(),
+         HEALF29 = case_when(HEALF29 == 0 ~ NA,
+                             HEALF29 == 1 ~ "Had time off school due to own illness/injury",
+                             HEALF29 == 5 ~ "Did not have time off school due to own illness/injury") %>% as.factor(),
+         HEALF31 = case_when(HEALF31 == 0 ~ NA,
+                             HEALF31 == 1 ~ "Had time off school to look after someone else",
+                             HEALF31 == 5 ~ "Did not have time off to look after someone else") %>% as.factor(),
+         HEALF36 = case_when(HEALF36 == 0 ~ NA,
+                             HEALF36 == 1 ~ "Had time off work",
+                             HEALF36 == 5 ~ "Did not have time off work") %>% 
+           as.factor(),
+         MWBSQ12 = na_if(MWBSQ12, 97),
+         MWBSQ13 = na_if(MWBSQ13, 97),
+         MWBSQ15 = case_when(MWBSQ15 %in% c(0, 7) ~ NA,
+                             MWBSQ15 == 1 ~ "All of the time",
+                             MWBSQ15 == 2 ~ "Most of the time",
+                             MWBSQ15 == 3 ~ "Some of the time",
+                             MWBSQ15 == 4 ~ "A little of the time",
+                             MWBSQ15 == 5 ~ "None of the time") %>% as.factor(),
+         DIETQ1 = case_when(DIETQ1 %in% c(0, 6) ~ NA,
+                            DIETQ1 == 1 ~ "Cow's milk",
+                            DIETQ1 == 2 ~ "Soy milk",
+                            DIETQ1 == 3 ~ "Evaporated or sweetened condensed",
+                            DIETQ1 == 4 ~ "Other types of milk",
+                            DIETQ1 == 5 ~ "Does not drink milk") %>% as.factor(),
+         DIETQ5 = case_when(DIETQ5 == 0 ~ NA,
+                            DIETQ5 == 1 ~ "One serve",
+                            DIETQ5 == 2 ~ "Two serves",
+                            DIETQ5 == 3 ~ "Three serves",
+                            DIETQ5 == 4 ~ "Four serves",
+                            DIETQ5 == 5 ~ "Five serves",
+                            DIETQ5 == 6 ~ "Six or more serves",
+                            DIETQ5 == 7 ~ "Less than one serve",
+                            DIETQ5 == 8 ~ "Don't eat vegetables") %>% as.factor(),
+         DIETQ6 = case_when(DIETQ6 == 0 ~ NA,
+                            DIETQ6 == 1 ~ "Increased",
+                            DIETQ6 == 2 ~ "Decreased",
+                            DIETQ6 == 3 ~ "Stayed about the same") %>% as.factor(),
+         DIETQ8 = case_when(DIETQ8 == 0 ~ NA,
+                            DIETQ8 == 1 ~ "One serve",
+                            DIETQ8 == 2 ~ "Two serves",
+                            DIETQ8 == 3 ~ "Three serves",
+                            DIETQ8 == 4 ~ "Four serves",
+                            DIETQ8 == 5 ~ "Five serves",
+                            DIETQ8 == 6 ~ "Six or more serves",
+                            DIETQ8 == 7 ~ "Less than one serve",
+                            DIETQ8 == 8 ~ "Don't eat fruit") %>% as.factor(),
+         DIETQ9 = case_when(DIETQ9 == 0 ~ NA,
+                            DIETQ9 == 1 ~ "Increased",
+                            DIETQ9 == 2 ~ "Decreased",
+                            DIETQ9 == 3 ~ "Stayed about the same") %>% as.factor(),
+         DIETQ12 = case_when(DIETQ12 %in% c(0, 6) ~ NA,
+                             DIETQ12 == 1 ~ "Very often",
+                             DIETQ12 == 2 ~ "Occasionally",
+                             DIETQ12 == 3 ~ "Rarely",
+                             DIETQ12 == 5 ~ "Not used") %>% as.factor(),
+         DIETQ14 = case_when(DIETQ14 %in% c(0, 6) ~ NA,
+                             DIETQ14 == 1 ~ "Very often",
+                             DIETQ14 == 2 ~ "Occasionally",
+                             DIETQ14 == 3 ~ "Rarely",
+                             DIETQ14 == 5 ~ "Not used") %>% as.factor(),
+         ALCCQ2 = case_when(ALCCQ2 %in% c(0, 9) ~ NA,
+                            ALCCQ2 == 1 ~ "1 week or less",
+                            ALCCQ2 == 2 ~ "More than 1 week to less than 2 weeks",
+                            ALCCQ2 == 3 ~ "2 weeks to less than 1 month",
+                            ALCCQ2 == 4 ~ "1 month to less than 3 months",
+                            ALCCQ2 == 5 ~ "3 months to less than 12 months",
+                            ALCCQ2 == 6 ~ "12 months",
+                            ALCCQ2 == 7 ~ "More than 12 months",
+                            ALCCQ2 == 8 ~ "Never consumed alcohol") %>% as.factor(),
+         ALCUSUQ2 = case_when(ALCUSUQ2 %in% c(0, 8) ~ NA,
+                              ALCUSUQ2 == 1 ~ "Every day",
+                              ALCUSUQ2 == 2 ~ "5 to 6 days a week",
+                              ALCUSUQ2 == 3 ~ "3 to 4 days a week",
+                              ALCUSUQ2 == 4 ~ "1 to 2 days a week",
+                              ALCUSUQ2 == 5 ~ "2 to 3 days a month",
+                              ALCUSUQ2 == 6 ~ "1 day a month",
+                              ALCUSUQ2 == 7 ~ "Less than once a month") %>%
+           as.factor(),
+         ALCQ03 = case_when(ALCQ03 == 0 ~ NA,
+                            ALCQ03 == 1 ~ "Increased compared to 12 months ago",
+                            ALCQ03 == 2 ~ "Decreased compared to 12 months ago",
+                            ALCQ03 == 3 ~ "Stayed the same") %>% as.factor(),
+         ASTHQ02 = case_when(ASTHQ02 == 0 ~ NA,
+                             ASTHQ02 == 1 ~ "Had asthma symptoms or treatment in last 12 months",
+                             ASTHQ02 == 5 ~ "Did not have asthma symptoms or treatment in last 12 months") %>% as.factor(),
+         ASTHQ03 = case_when(ASTHQ03 == 0 ~ NA,
+                             ASTHQ03 == 1 ~ "Still gets asthma",
+                             ASTHQ03 == 5 ~ "Does not still get asthma") %>% as.factor(),
+         ASTHQ20 = case_when(ASTHQ20 == 0 ~ NA,
+                             ASTHQ20 == 1 ~ "Asthma was worse or out of control",
+                             ASTHQ20 == 5 ~ "Asthma was not worse or out of control") %>% as.factor(),
+         ASTHQ22 = case_when(ASTHQ22 %in% c(0, 7) ~ NA,
+                             ASTHQ22 == 1 ~ "Has written asthma action plan",
+                             ASTHQ22 == 5 ~ "Does not have a written asthma action plan",
+                             ASTHQ22 == 6 ~ "Never heard of a written asthma action plan") %>% as.factor(),
+         ASTHQ29 = case_when(ASTHQ29 %in% c(0, 6) ~ NA,
+                             ASTHQ29 == 1 ~ "Woken in last 4 weeks",
+                             ASTHQ29 == 5 ~ "Have not woken in last 4 weeks") %>% 
+           as.factor(),
+         CNCRQ01 = case_when(CNCRQ01 == 6 ~ NA,
+                             CNCRQ01 == 1 ~ "Skin checked regularly",
+                             CNCRQ01 == 2 ~ "Skin not checked regularly") %>% 
+           as.factor(),
+         CNCRQ17 = case_when(CNCRQ17 == 1 ~ "Has been tested for cancer",
+                             CNCRQ17 == 5 ~ "Has not been tested for cancer") %>% 
+           as.factor(),
+         CNCR19AA = na_if(CNCR19AA, 7),
+         CNCR19A = pmap(list(CNCR19AA, CNCR19AB, CNCR19AC),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             }),
+         CNCR19BA = na_if(CNCR19BA, 7),
+         CNCR19B = pmap(list(CNCR19BA, CNCR19BB, CNCR19BC, CNCR19BD),
+                        function(...) {
+                               vals = c(...)
+                               if (anyNA(vals)) NA else vals
+                             }),
+         ) %>% select(-c(CNCR19AA:CNCR19BD)) %>% 
+  mutate(CNCRQ20 = case_when(CNCRQ20 == 0 ~ NA,
+                             CNCRQ20 == 1 ~ "Has been tested for cancer in last 2 years",
+                             CNCRQ20 == 5 ~ "Has not been tested for cancer in last 2 years") %>% as.factor(),
+         CARST27 = case_when(CARST27 %in% c(0, 6) ~ NA,
+                             CARST27 == 1 ~ "Blood pressure checked in last 2 years",
+                             CARST27 == 5 ~ "Blood pressure not checked in last 2 years") %>% as.factor(),
+         CARST37 = case_when(CARST37 == 0 ~ NA,
+                             CARST37 == 1 ~ "Advised by a doctor to use aspirin daily for heart or circulatory condition",
+                             CARST37 == 5 ~ "Not advised by a doctor to use aspirin daily for heart or circulatory condition") %>% as.factor(),
+         OSTEOQ5 = case_when(OSTEOQ5 %in% c(0, 6) ~ NA,
+                             OSTEOQ5 == 1 ~ "Action taken in last 2 weeks for osteoporosis or osteopenia",
+                             OSTEOQ5 == 5 ~ "No action taken in last 2 weeks for osteoporosis or osteopenia") %>% as.factor(),
+         DIABQ01A = case_when(DIABQ01A == 6 ~ NA,
+                              DIABQ01A == 1 ~ "Family member told they have diabetes",
+                              DIABQ01A == 5 ~ "Family member not told they have diabetes") %>% as.factor(),
+         DIABQ04 = case_when(DIABQ04 %in% c(0, 6) ~ NA,
+                             DIABQ04 == 1 ~ "Has been screened for diabetes in last 3 years",
+                             DIABQ04 == 5 ~ "Has not been screened for diabetes in last 3 years") %>% as.factor(),
+         DIABAQ01 = case_when(DIABAQ01 %in% c(0, 10) ~ NA,
+                              DIABAQ01 == 1 ~ "At least once a day",
+                              DIABAQ01 == 2 ~ "At least once a week",
+                              DIABAQ01 == 3 ~ "At least once a month",
+                              DIABAQ01 == 4 ~ "Every 2 to less than 3 months",
+                              DIABAQ01 == 5 ~ "Every 3 to less than 6 months",
+                              DIABAQ01 == 6 ~ "Every 6 months",
+                              DIABAQ01 == 7 ~ "Every 7 to 11 months",
+                              DIABAQ01 == 8 ~ "Every 12 months",
+                              DIABAQ01 == 9 ~ "Not at all in the last 12 months") %>% 
+           as.factor(),
+         DIABAQ02 = case_when(DIABAQ02 %in% c(0, 10) ~ NA,
+                              DIABAQ02 == 1 ~ "At least once a day",
+                              DIABAQ02 == 2 ~ "At least once a week",
+                              DIABAQ02 == 3 ~ "At least once a month",
+                              DIABAQ02 == 4 ~ "Every 2 to less than 3 months",
+                              DIABAQ02 == 5 ~ "Every 3 to less than 6 months",
+                              DIABAQ02 == 6 ~ "Every 6 months",
+                              DIABAQ02 == 7 ~ "Every 7 to 11 months",
+                              DIABAQ02 == 8 ~ "Every 12 months",
+                              DIABAQ02 == 9 ~ "Not at all in the last 12 months") %>% 
+           as.factor(),
+         DIABMQ01 = case_when(DIABMQ01 %in% c(0, 6) ~ NA,
+                              DIABMQ01 == 1 ~ "Currently having insulin every day",
+                              DIABMQ01 == 5 ~ "Not currently having insulin every day") %>% as.factor(),
+         DIABMQ12 = case_when(DIABMQ12 == 0 ~ NA,
+                              DIABMQ12 == 1 ~ "Took other action for Diabetes/HSL in last 2 weeks",
+                              DIABMQ12 == 5 ~ "Did not take other action for Diabetes/HSL in last 2 weeks") %>% as.factor(),
+         DIABMQ14 = case_when(DIABMQ14 %in% c(0, 6) ~ NA,
+                              DIABMQ14 == 1 ~ "Had HBA1C test in last 12 months",
+                              DIABMQ14 == 5 ~ "Did not have HBA1C test in last 12 months") %>% as.factor(),
+         GLASSES = case_when(GLASSES == 1 ~ "Currently wears glasses/contact lenses",
+                             GLASSES == 5 ~ "Does not wear glasses/contact lenses") %>% as.factor(),
+         DIABSQ2 = case_when(DIABSQ2 %in% c(0, 6) ~ NA,
+                             DIABSQ2 == 1 ~ "Has sight problem due to diabetes/HSL",
+                             DIABSQ2 == 5 ~ "Has no sight problem due to diabetes/HSL") %>% as.factor(),
+         LTCQ4B = case_when(LTCQ4B %in% c(0, 4) ~ NA,
+                            LTCQ4B == 1 ~ "Anaphylactic",
+                            LTCQ4B == 2 ~ "Non-anaphylactic",
+                            LTCQ4B == 3 ~ "Both") %>% as.factor(),
+         LTCQ4C = case_when(LTCQ4C %in% c(0, 4) ~ NA,
+                            LTCQ4C == 1 ~ "Anaphylactic",
+                            LTCQ4C == 2 ~ "Non-anaphylactic",
+                            LTCQ4C == 3 ~ "Both") %>% as.factor(),
+         CARME01 = case_when(CARME01 == 0 ~ NA,
+                             CARME01 == 1 ~ "Measurement agreed to be taken",
+                             CARME01 == 2 ~ "Measurement not taken for health reasons",
+                             CARME01 == 3 ~ "Measurement not taken for other reasons") %>% as.factor(),
+         CARME02S = case_when(CARME02S %in% c(0, 997) ~ NA,
+                              TRUE ~ CARME02S),
+         CARME02D = case_when(CARME02D %in% c(0, 997) ~ NA,
+                              TRUE ~ CARME02D),
+         CARME03S = case_when(CARME03S %in% c(0, 997, 998) ~ NA,
+                              TRUE ~ CARME03S),
+         CARME03D = case_when(CARME03D %in% c(0, 997, 998) ~ NA,
+                              TRUE ~ CARME03D),
+         CARME05S = case_when(CARME05S %in% c(0, 997, 998) ~ NA,
+                              TRUE ~ CARME05S),
+         CARME05D = case_when(CARME05D %in% c(0, 997, 998) ~ NA,
+                              TRUE ~ CARME05D),
+         HEALQ01 = case_when(HEALQ01 %in% c(0, 6) ~ NA,
+                             HEALQ01 == 1 ~ "With private health insurance",
+                             HEALQ01 == 5 ~ "Without private health insurance") %>% 
+           as.factor(),
+         HEALQ05 = case_when(HEALQ05 == 0 ~ NA,
+                             HEALQ05 == 1 ~ "< 1 year",
+                             HEALQ05 == 2 ~ "1 year to < 2 years",
+                             HEALQ05 == 3 ~ "2 years to < 5 years",
+                             HEALQ05 == 4 ~ "5 years or more") %>% as.factor()
+         )
+```
+
+Now that we are finally done, I will leave the full EDA for another time, as I will need to find the numeric variables again. Additionally, I am not sure what we will do with the grouped columns as well, but I suppose we will use them on a need-by-need basis.
+
+```{r}
+# Missing data, quite hard to see though.
+gg_miss_var(nhs8.data.cont)
+```
+
+# Saving Files
+
+This is so that I can share the cleaned files easily as `R` objects rather than saving as Excel files.
+
+```{r}
+saveRDS(nhs1.data, file = here("Objects", "AHSnhs11b14.rds"))
+saveRDS(nhs2.data, file = here("Objects", "AHSnhs11ba3.rds"))
+saveRDS(nhs3.data, file = here("Objects", "AHSnhs11bac.rds"))
+saveRDS(nhs4.data, file = here("Objects", "AHSnhs11bbi.rds"))
+saveRDS(nhs5.data, file = here("Objects", "AHSnhs11bcn-1.rds"))
+saveRDS(nhs6.data, file = here("Objects", "AHSnhs11bmd.rds"))
+saveRDS(nhs7.data, file = here("Objects", "AHSnhs11bhh.rds"))
+saveRDS(nhs8.data.cont, file = here("Objects", "AHSnhs11bsp.rds"))
+
+# To access, use readRDS("Objects/file.rds)
+```
+

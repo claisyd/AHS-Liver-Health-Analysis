@@ -1,0 +1,81 @@
+---
+title: "STAT3888: Post-Feedback Causal Inference"
+author: "Calvin Lai"
+date: today
+format:
+  html:
+    theme: cosmo
+    code-fold: show
+    highlight-style: github
+    embed-resources: true
+---
+
+This document is mainly just to generate the new DAG based on our new list of potential counfounders, which are `AlcoholRisk`, `SmokingDuration`, `Sex`, `NonSchoolQuals`, `IncomeDecile`, `Age`, and `Waist`; the latter two being numerical while the others are categorical. As before, our main predictor is `ExerciseGuidelines` and our response is `ALT` or `GGT`.
+
+```{r warning = F, message = F}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, 
+                      fig.align='center', fig.dim=c(10, 8))
+
+library(tidyverse)
+library(here)
+library(knitr)
+library(dagitty)
+library(ggdag)
+```
+
+# Overall DAG Plot
+
+Assuming all stated variables above are confounders, our DAG is as follows.
+
+```{r}
+# DAG Plot
+dag = dagitty("
+dag {
+  ExerciseGuidelines -> ALTGGT
+
+  Age -> ExerciseGuidelines
+  Age -> ALTGGT
+
+  Sex -> ExerciseGuidelines
+  Sex -> ALTGGT
+
+  Waist -> ExerciseGuidelines
+  Waist -> ALTGGT
+  
+  AlcoholRisk -> ExerciseGuidelines
+  AlcoholRisk -> ALTGGT
+  
+  SmokingDuration -> ExerciseGuidelines
+  SmokingDuration -> ALTGGT
+  
+  NonSchoolQuals -> ExerciseGuidelines
+  NonSchoolQuals -> ALTGGT
+  NonSchoolQuals -> IncomeDecile
+  
+  IncomeDecile -> ExerciseGuidelines
+  IncomeDecile -> ALTGGT
+}
+")
+
+ggdag(dag, text_size = 1.35) + theme_dag()
+
+adjustmentSets(
+  dag,
+  exposure = "ExerciseGuidelines",
+  outcome = "ALTGGT"
+)
+```
+
+Next, we should search for any literature that suggests that any of these variables are not actually confounders. Before, we have established that `Waist`, `Age` and `Sex` are confounders, so all that is left is to check whether `NonSchoolQuals`, `IncomeDecile`, `AlcoholRisk` and `SmokingDuration` are confounders, or some other type of variable (e.g., mediator, collider, or proxy); then, we may want to do some sensitivity analysis for those we deem other than confounder.
+
+# Causal Inference Analysis
+
+I believe that the other four variables should remain as confounders, which I provide more details in the `CausalInferenceSources.pdf` document. For now, I suppose we keep the DAG as is, and I also save it for future use.
+
+Hence, we can say the following for the report.
+
+::: callout-important
+Covariates were selected based on a causal DAG informed by prior literature. Age, sex, waist circumference, smoking history, alcohol-risk level and socioeconomic position were considered potential confounders of the physical activity–liver biomarker association. Educational qualification and income decile were used as available proxies for socioeconomic position
+
+Because the temporal relationship between physical activity and alcohol consumption is not fully established, alcohol-risk level was treated as a potential behavioural confounder; estimates should therefore be interpreted as associations with physical activity conditional on alcohol consumption.
+:::

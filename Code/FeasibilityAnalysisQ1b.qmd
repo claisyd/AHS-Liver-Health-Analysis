@@ -1,0 +1,924 @@
+---
+title: "STAT3888: Feasibility Analysis of Question 1b"
+author: "Calvin Lai"
+date: today
+format:
+  html:
+    theme: cosmo
+    code-fold: show
+    highlight-style: github
+    embed-resources: true
+---
+
+```{r include = F}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, 
+                      fig.align='center', fig.dim=c(10, 8))
+
+library(tidyverse)
+library(here)
+library(knitr)
+library(janitor)
+library(naniar)
+library(VIM)
+library(broom)
+library(epitools)
+library(nnet)
+library(patchwork)
+```
+
+The aim of this document is to determine the feasibility of the following research sub-problem.
+
+::: callout-important
+## Research Problem
+
+Does meeting physical activity guidelines compared to those who do not, improve liver biomarkers in smokers and medium/high risk alcohol consumers, after accounting for age, sex, waist circumference, and number of daily smokers in the household?
+:::
+
+The feasibility analysis should include the following, which will (hopefully) be done in this document. I think the first question should be the conclusion of the next ones, so will be left last. Also, for the overall class proportions and summaries, I will take the overall proportions, and only for the sample analysis will I try to take the main subset in our problem.
+
+- Can the research questions be answered with the data?
+- Do the variables exist in the dataset?
+- State the response variable(s) from the dataset for your research question and state either class proportions or numeric summary of the response variable(s).
+- List the main predictor variable(s) of interest (you could list a group of variables such as “all micronutrient variables” or simply a list of variables).
+- List any potential confounding variable(s) (Again, you could list a group of variables such as “all micronutrient variables” or simply a list of variables).
+- Report on the number of samples in the complete dataset containing all of these variables described.
+- Perform a few simple analyses to see if the question can be answered.
+- Visualise the initial results.
+
+------------------------------------------------------------------------
+
+# I. Do the variables exist in the dataset?
+
+The important variables to look for are (we will try to use as little of them as possible to make complete case analysis more feasible, if possible):
+
+1.  Alcohol risk level (if following 2001 guidelines, then `AL2K7DAY`)
+2.  Smoking status/daily smoking/smoking duration (`SMKAGEDB`)
+3.  Physical activity level guidelines (`EXREGUIC`)
+4.  ALT and GGT liver biomarkers (`ALTRESB`, `GGTRESB`)
+5.  Age, sex, waist circumference, number of daily smokers (`AGEB`, `SEX`, `PHDWCATM`, `PHDWCATF`, `DSMKHHRB`)
+
+We can find these in the `AHSnhs11bsp`, `AHSnhs11bhh`, and `AHSnhs11bbi` data sets.
+
+```{r}
+# Load data sets
+bsp = readRDS(here("NHS Clean", "Objects", "AHSnhs11bsp.rds"))
+bhh = readRDS(here("NHS Clean", "Objects", "AHSnhs11bhh.rds"))
+bbi = readRDS(here("NHS Clean", "Objects", "AHSnhs11bbi.rds"))
+```
+
+These can be joined using the `ABSLID` identifier, leaving us with 15565 entries. The entry count is bounded below by `bhh` in this case, while the other two data sets have 20426 entries, likely due to `ABSPID` (i.e., each person in the household is one entry). We can see this using the `n_distinct` and `intersect` functions.
+
+```{r}
+# Check distinct ABSLIDs of each data set
+noquote(paste("BSP ABSLID count:", n_distinct(bsp$ABSLID)))
+noquote(paste("BBI ABSLID count:", n_distinct(bbi$ABSLID)))
+noquote(paste("BHH ABSLID count:", n_distinct(bhh$ABSLID)))
+
+# Check intersections of ABSLIDs to see if they are the same across all 3 sets
+bsp.bbi = intersect(bsp$ABSLID, bbi$ABSLID)
+bsp.bhh = intersect(bsp$ABSLID, bhh$ABSLID)
+bbi.bhh = intersect(bbi$ABSLID, bhh$ABSLID) %>% sort()
+noquote(paste("BSP/BBI and BSP/BHH:", identical(bsp.bbi, bsp.bhh)))
+noquote(paste("BSP/BBI and BBI/BHH:", identical(bsp.bbi, bbi.bhh)))
+
+# Also check ABSLID/ABSPID pairs are the same in BBI and BSP
+bbi.iden = bbi %>% select(c(ABSLID, ABSPID)) %>% arrange(pick(1, 2))
+bsp.iden = bsp %>% select(c(ABSLID, ABSPID)) %>% arrange(pick(1, 2))
+noquote(paste("BBI Identification = BSP Identification:", 
+              identical(bbi.iden, bsp.iden)))
+```
+
+Hence, we may try to join them using the `ABSLID` as the inner join, but for now we can try to join `bbi` and `bsp` since they have the same identification, so it will be easier to deal with overall. Since these are person-level data sets, we will call it `pdat`. Before that, we should take the relevant variables only, to make things a lot cleaner.
+
+Actually, I also just realised that the only variable from `bhh` is `DSMKHHRB`, so we don't really have to worry too much about `bhh`.
+
+## Relevant Variable Mapping
+
+We can map out the variables we want to each function for easy reference.
+
+| File | Variables |
+|-----------|-------------------------------------------------------------|
+| BBI | `ALTRESB`, `GGTRESB`, |
+| BSP | `AL2K7DAY`, `SMKAGEDB`, `EXREGUIC`, `AGEB`, `SEX`, `PHDWCATM`, `PHDWCATF` |
+| BHH | `DSMKHHRB` |
+
+Note that we will combine `PHDWCATM` and `PHDWCATF` into `WAIST`.
+
+```{r}
+# Variable lists
+bbi.vars = c("ABSLID", "ABSPID", "ALTRESB", "GGTRESB")
+bsp.vars = c("ABSLID", "ABSPID", "AL2K7DAY", "SMKAGEDB", "EXREGUIC", "AGEB", "SEX",
+             "PHDWCATM", "PHDWCATF")
+bhh.vars = c("ABSLID", "DSMKHHRB")
+
+# Taking relevant subsets, and releveling
+bbir = bbi %>% select(all_of(bbi.vars)) %>% 
+  mutate(ALTRESB = fct_relevel(ALTRESB, levels(bbi$ALTRESB)[9]))
+bspr = bsp %>% select(all_of(bsp.vars)) %>% 
+  mutate(EXREGUIC = fct_relevel(EXREGUIC, levels(bsp$EXREGUIC)[2]),
+         AGEB = fct_relevel(AGEB, levels(bsp$AGEB)[11], after = 1),
+         WAIST = ifelse(!is.na(PHDWCATM), 
+                            as.character(PHDWCATM), as.character(PHDWCATF)),
+         WAIST = factor(WAIST)) %>% 
+  select(-c(PHDWCATM, PHDWCATF))
+bhhr = bhh %>% select(all_of(bhh.vars)) %>% 
+  mutate(DSMKHHRB = fct_relevel(DSMKHHRB, "None", "One", "Two", "Three or more"))
+```
+
+Thus, to answer the question, I would say that the relevant variables do exist in the data set, and have been readily selected here.
+
+------------------------------------------------------------------------
+
+# II. State the response variable(s) from the dataset for your research question and state either class proportions or numeric summary of the response variable(s).
+
+The response variables will be the liver biomarkers "Alanine aminotransferase" (ALT) and "Gamma glutamyl transferase" (GGT), which are given by the categorical variables `ALTRESB` and `GGTRESB` for the range.
+
+Hence, we will calculate the class proportions and missing value summaries for the four variables. I think a future question asks about complete cases, so I will not do very extensive missing data analysis yet.
+
+```{r}
+# Main data set: bbir, now we compute the proportions that are missing
+gg_miss_var(bbir)
+miss_var_summary(bbir)
+
+# Then class proportions for each
+proportions = bbir %>%
+  select(where(is.factor)) %>% 
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "class") %>%
+  drop_na(class) %>% 
+  count(variable, class) %>% 
+  group_by(variable) %>% 
+  mutate(proportion = n / sum(n))
+
+# Print a table for each variable
+df_list = proportions %>% group_split(variable)
+for (sub_df in df_list) {
+  
+  var_name = unique(sub_df$variable)
+  cat("\n--- Proportions for:", var_name, "---\n")
+  print(sub_df %>% select(class, n, proportion))
+  
+}
+
+# Bar plot for each variable
+plots = lapply(df_list, function(sub_df) {
+  
+  var_name = unique(sub_df$variable)
+  ggplot(sub_df, aes(x = class, y = proportion, fill = class)) +
+    geom_col(show.legend = FALSE) +
+    labs(
+      title = paste("Proportions of", var_name),
+      x = var_name,
+      y = "Proportion"
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  }
+)
+
+plots[[1]] + plots[[2]]
+```
+
+------------------------------------------------------------------------
+
+# III. List the main predictor variable(s) of interest.
+
+The main variables of interest would be whether the subject met their physical activity guidelines or not, which is the `EXREGUIC` variable. These two are categorical variables, so we will do the same mini EDA as above.
+
+```{r}
+# Take the main predictors variables 
+pred.vars = c("ABSLID", "ABSPID", "EXREGUIC")
+pred.data = bspr %>% select(pred.vars)
+
+# Missing data proportions
+gg_miss_var(pred.data)
+miss_var_summary(pred.data)
+
+# Class proportions
+proportions = pred.data %>%
+  select(where(is.factor)) %>% 
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "class") %>%
+  drop_na(class) %>% 
+  count(variable, class) %>% 
+  group_by(variable) %>% 
+  mutate(proportion = n / sum(n))
+
+# Print a table for each variable
+df_list = proportions %>% group_split(variable)
+for (sub_df in df_list) {
+  
+  var_name = unique(sub_df$variable)
+  cat("\n--- Proportions for:", var_name, "---\n")
+  print(sub_df %>% select(class, n, proportion))
+  
+}
+
+# Bar plot for each variable
+plots = lapply(df_list, function(sub_df) {
+  
+  var_name = unique(sub_df$variable)
+  ggplot(sub_df, aes(x = class, y = proportion, fill = class)) +
+    geom_col(show.legend = FALSE) +
+    labs(
+      title = paste("Proportions of", var_name),
+      x = var_name,
+      y = "Proportion"
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  }
+)
+
+plots[[1]]
+```
+
+------------------------------------------------------------------------
+
+# IV. List any potential confounding variable(s).
+
+The confounding variables are the variables we are accounting for, which are just the rest of the variables.
+
+```{r}
+# Confounding variables for BSP
+conf.vars.bsp = c("ABSLID", "ABSPID", "AGEB", "SEX", "WAIST")
+bspr.conf = bspr %>% select(conf.vars.bsp)
+
+# Missing data proportions
+gg_miss_var(bspr.conf)
+miss_var_summary(bspr.conf)
+
+# Class proportions
+proportions = bspr.conf %>%
+  select(where(is.factor)) %>% 
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "class") %>%
+  drop_na(class) %>% 
+  count(variable, class) %>% 
+  group_by(variable) %>% 
+  mutate(proportion = n / sum(n))
+
+# Print a table for each variable
+df_list = proportions %>% group_split(variable)
+for (sub_df in df_list) {
+  
+  var_name = unique(sub_df$variable)
+  cat("\n--- Proportions for:", var_name, "---\n")
+  print(sub_df %>% select(class, n, proportion))
+  
+}
+
+# Bar plot for each variable
+plots = lapply(df_list, function(sub_df) {
+  
+  var_name = unique(sub_df$variable)
+  ggplot(sub_df, aes(x = class, y = proportion, fill = class)) +
+    geom_col(show.legend = FALSE) +
+    labs(
+      title = paste("Proportions of", var_name),
+      x = var_name,
+      y = "Proportion"
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  }
+)
+
+# Same for bhhr, which already only contains the confounder
+gg_miss_var(bhhr)
+miss_var_summary(bhhr)
+
+proportions = bhhr %>%
+  select(where(is.factor)) %>% 
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "class") %>%
+  drop_na(class) %>% 
+  count(variable, class) %>% 
+  group_by(variable) %>% 
+  mutate(proportion = n / sum(n))
+
+# Direct print without using loops or group_split()
+cat("\n--- Proportions for: DSMKHHRB ---\n")
+proportions %>% 
+  ungroup() %>% 
+  select(class, n, proportion) %>% 
+  print()
+
+# Barplot for DSMKHHRB
+p6 = ggplot(proportions, aes(x = class, y = proportion, fill = class)) +
+  geom_col(show.legend = FALSE) +
+  labs(
+    title = "Proportions for DSMKHHRB",
+    x = "DSMKHHRB",
+    y = "Proportion"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# Print plots
+plots[[1]] + plots[[2]]
+plots[[3]] + p6
+```
+
+------------------------------------------------------------------------
+
+# V. Report on the number of samples in the complete dataset containing all of these variables described.
+
+Here, we can do more of the missing data analysis (or complete case analysis in this case). For now, I will try to join the `bspr` and `bbir` data sets and do the complete case analysis there, and the `bhhr` complete case analysis will be done separately.
+
+```{r}
+# bhhr complete case analysis
+bhhr.cc = bhhr %>% filter(if_all(everything(), ~ !is.na(.))) %>% nrow()
+noquote(paste("BHHR Complete Cases:", bhhr.cc))
+
+# Joining bspr and bbir, called pdat = person data, we need to take distinct due to duplication (may want to fix it at some point), but this gives the right # of rows
+pdat = inner_join(bspr, bbir, by = c("ABSLID", "ABSPID")) %>% distinct()
+noquote(paste("Are the rows equal between PDAT and BSPR:", nrow(pdat) == nrow(bspr)))
+noquote(paste("Are the rows equal between PDAT and BBIR:", nrow(pdat) == nrow(bbir)))
+
+# Seems like everything works, so we can try the complete case analysis
+gg_miss_var(pdat)
+gg_miss_upset(pdat)
+pdat.cc = pdat %>% filter(if_all(everything(), ~ !is.na(.))) %>% nrow()
+noquote(paste("PDAT Complete Cases:", pdat.cc))
+```
+
+We also check individually the complete cases for the data sets.
+
+```{r}
+# Complete cases of bbir and bspr
+bspr.cc = bspr %>% filter(if_all(everything(), ~ !is.na(.))) %>% nrow()
+noquote(paste("BSPR Complete Cases:", bspr.cc))
+gg_miss_upset(bspr)
+
+bbir.cc = bbir %>% filter(if_all(everything(), ~ !is.na(.))) %>% nrow()
+noquote(paste("BBIR Complete Cases:", bbir.cc))
+gg_miss_upset(bbir)
+```
+
+::: callout-note
+## Possible Solution: Imputation
+
+One remedy for this, that may not be very effective, is imputation methods. I will try to read more about the best methods for categorical variables; it may involve $k$-nearest neighbours or something like that, or more modern approaches I found like "Multiple Imputation by Chained Equations (MICE)", but I am not sure how effective those are.
+:::
+
+I don't think there is any point in joining the three data sets by `ABSLID`, as there will not be any complete cases (since `bspr` doesn't have any), so I will likely leave it like this for now.
+
+------------------------------------------------------------------------
+
+# VI. Perform a few simple analyses to see if the question can be answered.
+
+Now, we should start with taking the population of interest, which are "smokers and medium/high risk alcohol consumers". We will try to do this for the `pdat` data, and then for the `bhhr` data we can just take a subset based on the `ABSLID` from the `pdat` subset.
+
+```{r}
+# Taking a subset based on smoking and medium/high risk alcohol levels, will interpret smoking as anything but Never smoked daily, and remove NA as well for these
+# And also will assume that we use the adult population only.
+pdat.pop = pdat %>% filter(AL2K7DAY %in% c("Medium risk", "High risk")) %>% 
+  filter(SMKAGEDB != "Never smoked daily") %>% 
+  filter(!AGEB %in% c("0-4 years", "5-9 years", "10-14 years","15-17 years"))
+
+# Try some missing-ness analysis like above
+gg_miss_var(pdat.pop)
+gg_miss_upset(pdat.pop)
+miss_var_summary(pdat.pop)
+
+# BHHR population subset, just take the ABSLID of the pdat.pop in bhhr, in this case the DSMKHHRB variable is complete, and we can also merge it into pdat.pop
+bhhr.pop = bhhr %>% filter(ABSLID %in% pull(pdat.pop, ABSLID))
+miss_var_summary(bhhr.pop)
+
+# Join using ABSLID, also remove the filtered levels
+pdat.full = inner_join(pdat.pop, bhhr.pop, by = "ABSLID") %>% 
+  mutate(SMKAGEDB = fct_drop(SMKAGEDB),
+         AGEB = fct_drop(AGEB),
+         AL2K7DAY = fct_drop(AL2K7DAY))
+pdat.full.cc = pdat.full %>% filter(if_all(everything(), ~ !is.na(.))) %>% nrow()
+noquote(paste("Full PDAT Complete Cases:", pdat.full.cc))
+```
+
+## Simple Analysis I: No Accounting for Confounders
+
+First, we can try a $\chi^2$ test for `EXREGUIC` with `ALTRESB`, and for `EXREGUIC` with `GGTRESB`
+
+```{r}
+# Test 1; check expected counts, and print output
+test1 = chisq.test(table(pdat.full$EXREGUIC, pdat.full$ALTRESB))
+noquote(paste("Test 1 - Any expected counts < 5:", any(test1$expected < 5)))
+test1
+
+# Test 2; we see that some expected counts are < 5, so maybe use Fisher's test as well
+test2 = chisq.test(table(pdat.full$EXREGUIC, pdat.full$GGTRESB))
+noquote(paste("Test 2 - Any expected counts < 5:", any(test2$expected < 5)))
+test2
+test2.f = fisher.test(table(pdat.full$EXREGUIC, pdat.full$GGTRESB),
+                    simulate.p.value = TRUE, B = 10000)
+test2.f
+```
+
+It seems that in either case, we don't obtain a statistically significant result; i.e., there is no evidence suggesting that physical activity does affect liver biomarkers for our population; however, we have not accounted for any confounder yet so we will try that now.
+
+### Odds Ratio and Relative Risk
+
+To ensure mathematical stability when computing the odds ratio and relative risk, we should try to reduce the number of categories of `ALTRESB` and `GGTRESB`. I will collapse them into hopefully three categories:
+
+- For `ALTRESB`, we have Low (<=30), Borderline (30 to 40), High (>40) for males, and Low (<=25), Borderline (25 to 30), and High (>30) for females.
+- For `GGTRESB`, we have Low (<50), Borderline (50 to 55), High (>55) for Males, and Low (<30), Borderline (30 to 35), and High (>35) for females.
+
+This way, we can adjust the categories based on the cutoff from literature, and adjusted for sex as well.
+
+```{r}
+pdat.full = pdat.full %>%
+  mutate(
+    ALT3 = case_when(
+      SEX == "Male" & ALTRESB %in% c("Less than 10", 
+                                     "10 to less than 15", 
+                                     "15 to less than 20", 
+                                     "20 to less than 25", 
+                                     "25 to less than 30") ~ "Low",
+      SEX == "Male" & ALTRESB %in% c("30 to less than 35", 
+                                     "35 to less than 40") ~ "Borderline",
+      SEX == "Male" & ALTRESB %in% c("40 to less than 45", 
+                                     "45 to less than 50", 
+                                     "More than 50") ~ "High",
+      
+      SEX == "Female" & ALTRESB %in% c("Less than 10", 
+                                     "10 to less than 15", 
+                                     "15 to less than 20", 
+                                     "20 to less than 25") ~ "Low",
+      SEX == "Female" & ALTRESB == "25 to less than 30" ~ "Borderline",
+      SEX == "Female" & ALTRESB %in% c("30 to less than 35", 
+                                     "35 to less than 40",
+                                     "40 to less than 45", 
+                                     "45 to less than 50", 
+                                     "More than 50") ~ "High",
+      TRUE ~ NA
+    ) %>% as.factor(),
+    GGT3 = case_when(
+      SEX == "Male" & GGTRESB %in% c("10 or less", "More than 10 to 15", 
+                                     "More than 15 to 20", 
+                                     "More than 20 to 25", 
+                                     "More than 25 to 30", 
+                                     "More than 30 to 35",
+                                     "More than 35 to 40", 
+                                     "More than 40 to 45") ~ "Low",
+      SEX == "Male" & GGTRESB %in% c("More than 45 to 50",
+                                     "More than 50 to 55")  ~ "Borderline",
+      SEX == "Male" & GGTRESB %in% c("More than 55 to 60",
+                                     "More than 60") ~ "High",
+      
+      SEX == "Female" & GGTRESB %in% c("10 or less", "More than 10 to 15", 
+                                     "More than 15 to 20", 
+                                     "More than 20 to 25", 
+                                     "More than 25 to 30") ~ "Low",
+      SEX == "Female" & GGTRESB == "More than 30 to 35" ~ "Borderline",
+      SEX == "Female" & GGTRESB %in% c("More than 35 to 40", 
+                                     "More than 40 to 45", 
+                                     "More than 45 to 50",
+                                     "More than 50 to 55",
+                                     "More than 55 to 60", 
+                                     "More than 60") ~ "High",
+      TRUE ~ NA
+    ) %>% as.factor(),
+    EXREGUIC = relevel(EXREGUIC, ref = "Met recommended guidelines")
+  ) %>% 
+  mutate(ALT3 = fct_relevel(ALT3, "Low", "Borderline", "High"),
+         GGT3 = fct_relevel(GGT3, "Low", "Borderline", "High"))
+
+# Chi^2 tests for baseline
+test1 = chisq.test(table(pdat.full$EXREGUIC, pdat.full$ALT3))
+noquote(paste("Test with ALT3 - Any expected counts < 5:", any(test1$expected < 5)))
+test1
+
+test2 = chisq.test(table(pdat.full$EXREGUIC, pdat.full$GGT3))
+noquote(paste("Test with GGT3 - Any expected counts < 5:", any(test1$expected < 5)))
+test2
+```
+
+Then, we can use the `ALT3` and `GGT3` variables to compute the odds ratio and relative risk.
+
+```{r}
+# Odds Ratio and Relative Risk
+mymat = table(pdat.full$EXREGUIC, pdat.full$ALT3)
+
+# Run OR and RR Calculations
+or_model = oddsratio(mymat)
+rr_model = riskratio(mymat)
+
+# Clean and extract only the relevant metrics
+or_stats = or_model$measure[2, ] 
+rr_stats = rr_model$measure[2, ]
+
+# Data frame for output
+OR.RR = data.frame(
+  Metric = c("Odds Ratio (OR)", "Relative Risk (RR)"),
+  Estimate = c(or_stats["estimate"], rr_stats["estimate"]),
+  Lower_CI = c(or_stats["lower"], rr_stats["lower"]),
+  Upper_CI = c(or_stats["upper"], rr_stats["upper"])
+)
+
+OR.RR %>%
+  mutate(across(where(is.numeric), ~ round(., 2))) %>% 
+  kable(
+    caption = "Odds Ratio and Relative Risk of EXREGUIC and ALT Levels",
+    col.names = c("Measure", "Point Estimate", "Lower 95% CI", "Upper 95% CI"),
+    align = "lccc"
+  )
+
+# For GGT as well
+# Odds Ratio and Relative Risk
+mymat = table(pdat.full$EXREGUIC, pdat.full$GGT3)
+
+# Run OR and RR Calculations
+or_model = oddsratio(mymat)
+rr_model = riskratio(mymat)
+
+# Clean and extract only the relevant metrics
+or_stats = or_model$measure[2, ] 
+rr_stats = rr_model$measure[2, ]
+
+# Data frame for output
+OR.RR = data.frame(
+  Metric = c("Odds Ratio (OR)", "Relative Risk (RR)"),
+  Estimate = c(or_stats["estimate"], rr_stats["estimate"]),
+  Lower_CI = c(or_stats["lower"], rr_stats["lower"]),
+  Upper_CI = c(or_stats["upper"], rr_stats["upper"])
+)
+
+OR.RR %>%
+  mutate(across(where(is.numeric), ~ round(., 2))) %>% 
+  kable(
+    caption = "Odds Ratio and Relative Risk of EXREGUIC and GGT Levels",
+    col.names = c("Measure", "Point Estimate", "Lower 95% CI", "Upper 95% CI"),
+    align = "lccc"
+  )
+```
+
+This tells us that subjects who met the recommended guidelines have $56\%$ odds of having a normal ALT level, and similarly the relative risk tells us that they are $68\%$ times as likely to have normal ALT levels. This seems quite paradoxical, especially since $1$ is not in the confidence intervals, i.e., the results are statistically significant. Hence, there may be confounding variables at play here, which we will address in the next section.
+
+We see the same result for GGT levels as well, with an odds ratio of $75\%$. Note that before adjusting for sex in calculating the levels for ALT and GGT, the result here was quite the opposite.
+
+## Simple Analysis II: Confounding Variable Analysis
+
+This stage will mainly focus on the following analyses:
+
+1.  Checking confounder exposure, using $\chi^2$ tests between `EXREGUIC` and the confounding variables.
+2.  Use the Cochran-Mantel-Haenszel (CMT) tests to test the main relationship while controlling for *one* stratified confounder.
+3.  Run a multinomial logistic regression, and from there obtain the adjusted odds ratio for all confounders as well.
+4.  Generate some plots, such as a mosaic plot and a faceted stacked bar plot.
+
+### Confounder Exposure
+
+We will conduct $\chi^2$ tests (or Fisher's exact tests if appropriate) between `EXREGUIC` and the confounding variables `AGEB`, `SEX`, `WAIST`, `DSMKHHRB`. We just quickly summarise these results in a table for brevity.
+
+```{r}
+# chi^2 tests for confounder exposure
+confounders = c("AGEB", "SEX", "WAIST", "DSMKHHRB")
+results_list = list()
+
+# Loop over confounders
+for (i in seq_along(confounders)) {
+  
+  var_name = confounders[i]
+  con_table = table(pdat.full$EXREGUIC, pdat.full[[var_name]])
+  chi_test_initial = chisq.test(con_table, correct = FALSE)
+  any_expected_less_5 = any(chi_test_initial$expected < 5)
+  
+  # Conditional execution based on expected counts
+  if (any_expected_less_5) {
+    # Switch to Fisher's Exact Test with simulated p-values
+    stat_test = fisher.test(con_table, simulate.p.value = TRUE, B = 10000)
+    test_type = "Fisher's Exact"
+    chi2_val = NA # Fisher doesn't yield a chi-squared value
+    df_val = NA # Fisher doesn't yield degrees of freedom
+    p_val = stat_test$p.value
+    
+  } else {
+    # Stick with standard Chi-Square test
+    stat_test = chi_test_initial
+    test_type = "Chi-Square"
+    chi2_val = stat_test$statistic
+    df_val = stat_test$parameter
+    p_val = stat_test$p.value
+  }
+  
+  # Store metrics into a data frame row
+  results_list[[i]] = data.frame(
+    Test_Num = paste("Test", i),
+    Confounder = var_name,
+    Test_Used = test_type,
+    Expected_Less_5 = ifelse(any_expected_less_5, "TRUE", "FALSE"),
+    Chi_Sq_Stat = chi2_val,
+    DF = df_val,
+    P_Value = p_val,
+    stringsAsFactors = FALSE
+  )
+}
+
+# Bind rows together, clear weird row names, and evaluate statistical significance
+confounder_summary = bind_rows(results_list) %>%
+  mutate(Significant_0.05 = ifelse(P_Value < 0.05, "YES", "NO"))
+rownames(confounder_summary) = NULL 
+
+# 5. Output results
+confounder_summary %>%
+  select(Confounder, Test_Used, P_Value, Significant_0.05) %>% 
+  mutate(P_Value = round(P_Value, 4)) %>%
+  kable(
+    caption = "Confounder Exposure Check against Physical Activity (EXREGUIC)",
+    col.names = c("Confounder Variable", "Test Executed", "p-value", "Significant (<0.05)?"),
+    align = "cccccc"
+  )
+
+```
+
+We see that only `WAIST` and `DSMKHHRB` are significant, so those will be the main priorities when we do the stratified $\chi^2$ tests (i.e., the CMH tests), but we will still conduct it for the other variables as well.
+
+### Cochran-Mantel-Haenszel Tests
+
+The [Cochran-Mantel-Haenszel (CMH)](https://en.wikipedia.org/wiki/Cochran–Mantel–Haenszel_statistics) Test is a statistical method that is used to evaluate the association between two categorical variables while accounting for a third one.
+
+::: callout-important
+## Significance Interpretation of CMH Test
+
+The CMH test essentially tests the two hypotheses
+
+- $\mathcal{H}_0:$ there is no association between $X$ and $Y$ after controlling for the strata of $Z$
+- $\mathcal{H}_1:$ there is a true, common association across all strata.
+
+Hence, if the result is significant ($p<0.05$), it means that $X$ has a strong, independent relationship with $Y$. Even when you hold $Z$ completely equal, $X$ still makes a statistically significant difference. The third variable is not fully explaining away your primary effect.
+
+If the result is not significant ($p>0.05$), it means that no conditional association can be proven between $X$ and $Y$ once $Z$ is accounted for. If a simple bivariate test originally showed a significant relationship, it proves that the third variable ($Z$) was a true, active confounder driving a misleading baseline trend (or causing Simpson's Paradox). The moment the groups are forced to be equal on $Z$, the apparent impact of $X$ vanishes.
+:::
+
+```{r}
+# CMH Test Summary for ALT
+ordered_confounders = c("DSMKHHRB", "WAIST", "AGEB", "SEX")
+cmh_results = list()
+
+# Loop over confounders
+for (i in seq_along(ordered_confounders)) {
+  var_name = ordered_confounders[i]
+  
+  cat("\n===================================\n")
+  cat("CMH Test for:", var_name, "\n")
+  cat("===================================\n")
+  
+  # Generate contingency table over all three variables
+  cmh_table = table(pdat.full$EXREGUIC, pdat.full$ALT3, pdat.full[[var_name]])
+  
+  # Run the test for each confounder
+  test = tryCatch({
+    mantelhaen.test(cmh_table)
+  }, 
+    error = function(e) {NULL}
+  )
+  
+  print(test)
+}
+```
+
+We just do the same for GGT as well.
+
+```{r}
+# CMH Test Summary for GGT
+ordered_confounders = c("DSMKHHRB", "WAIST", "AGEB", "SEX")
+cmh_results = list()
+
+# Loop over confounders
+for (i in seq_along(ordered_confounders)) {
+  var_name = ordered_confounders[i]
+  
+  cat("\n===================================\n")
+  cat("CMH Test for:", var_name, "\n")
+  cat("===================================\n")
+  
+  # Generate contingency table over all three variables
+  cmh_table = table(pdat.full$EXREGUIC, pdat.full$GGT3, pdat.full[[var_name]])
+  
+  # Run the test for each confounder
+  test = tryCatch({
+    mantelhaen.test(cmh_table)
+  }, 
+    error = function(e) {NULL}
+  )
+  
+  print(test)
+}
+```
+
+Due to data sparsity (zero-count cells) within specific subgroups, a valid common odds ratio could not be computed for `AGEB` using individual CMH stratification. This mathematically demonstrates that a multi-variable Machine Learning approach or standard logistic regression is required to model these sparse parameters simultaneously without dropping data.
+
+### Multinomial Logistic Regression (MLR)
+
+The previous tests computed some odds ratios, however they were done in isolation. The MLR model will help us get the adjusted odds ratios after controlling for all the confounders. I introduce a simple function to clean the final table by splitting the main variable and the category level here.
+
+```{r}
+# Run the model 
+mlr = glm(
+  ALT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, 
+  data = pdat.full, 
+  family = binomial(link = "logit")
+)
+
+# Cleaning helper function
+clean_predictor_names = function(df_input) {
+  
+  var_names = c("EXREGUIC", "AGEB", "SEX", "WAIST", "DSMKHHRB")
+  var_pattern = paste0("^(", paste(var_names, collapse = "|"), ")")
+  
+  df_input %>%
+    mutate(
+      # Safely extract the full, exact main variable name
+      Variable_Name = str_extract(Variable, var_pattern),
+      
+      # Safely strip the main variable name away, leaving ONLY the category text
+      Category_Level = str_remove(Variable, var_pattern),
+      
+      # Fallback checks just in case any baseline terms don't match the pattern
+      Variable_Name = ifelse(is.na(Variable_Name), Variable, Variable_Name),
+      Category_Level = ifelse(Category_Level == "" | is.na(Category_Level), "Active Category", Category_Level)
+    ) %>%
+    # Select and order the final presentation columns
+    select(Variable_Name, Category_Level, Adjusted_OR, Lower_95_CI, Upper_95_CI, p_value) %>%
+    mutate(
+      Significant_05 = ifelse(p_value < 0.05, "YES", "NO"),
+      across(c(Adjusted_OR, Lower_95_CI, Upper_95_CI), ~ round(., 2)),
+      p_value = round(p_value, 4)
+    )
+}
+
+# Clean and display the results
+tidy_adjusted = tidy(mlr, exponentiate = TRUE, conf.int = TRUE)
+glm_to_clean = tidy_adjusted %>% 
+  filter(term != "(Intercept)") %>% 
+  select(Variable = term, Adjusted_OR = estimate, Lower_95_CI = conf.low, Upper_95_CI = conf.high, p_value = p.value)
+glm_clean = clean_predictor_names(glm_to_clean)
+
+glm_clean %>%
+  kable(
+    caption = "Fully Adjusted Odds Ratios using Multiple Logistic Regression (Outcome: ALT3)",
+    col.names = c("Main Variable", "Category Level", "Adjusted OR", "Lower 95% CI", "Upper 95% CI", "p-value", "Significant?"),
+    align = "ccccccc"
+  )
+```
+
+We note that there are many warnings that state our fitted probabilities are numerically 0 or 1 at several points, so we can try another implementation of logistic regression as well. We will try to use multinomial logistic regression here, particularly the function `multinom` from `nnet`. We originally used `brglm2`'s `brmultinom` but the convergence was too slow for the full data set, and we wanted to make sure we used the same model functions for each data set. We still save `MLR_ALT3_brm.rds` and `MLR_GGT3_brm.rds` as the files for the `brmultinom` models, just in case we want to look into those in the future.
+
+```{r}
+# Run MLR; save file as MLR_ALT3.rds
+model_file = here("Feasibility Analysis", "Objects", "MLR_ALT3.rds")
+if (file.exists(model_file)) {
+  fmlr = readRDS(model_file)
+} else {
+  fmlr = multinom(ALT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB,
+                    data = pdat.full, Hess = TRUE)
+  saveRDS(fmlr, model_file)
+}
+
+summary(fmlr)
+```
+
+::: callout-important
+## Key Findings for ALT
+
+- Sex was the clearest predictor of ALT category. After adjustment for physical activity, age, waist-risk category and smoking, males had substantially higher odds of both borderline ALT and high ALT than females. The estimated odds were about 3.3 times higher for borderline ALT (OR ≈ 3.30, 95% CI ≈ 1.74–6.26) and 3.0 times higher for high ALT (OR ≈ 2.97, 95% CI ≈ 1.70–5.20), relative to normal ALT.
+- Physical activity showed an unexpected association with borderline ALT. Participants who did not meet the recommended exercise guidelines had about 48% lower odds of borderline rather than normal ALT compared with those meeting the guidelines (OR ≈ 0.52, 95% CI ≈ 0.27–0.98). However, there was no clear association with high ALT (OR ≈ 0.80, 95% CI ≈ 0.46–1.40). This makes the exercise result worth discussing cautiously rather than interpreting as evidence that lower activity is protective.
+- Waist-risk status was particularly associated with high ALT. Participants classified as “Not at risk” had substantially lower odds of high rather than normal ALT than those in the reference waist-risk category (“Increased risk”): OR ≈ 0.21 (95% CI ≈ 0.09–0.51), corresponding to roughly 79% lower odds. There was no comparably clear association for borderline ALT.
+- The “Substantially increased risk” waist category did not show a clearly higher ALT risk than the middle waist-risk category after adjustment. Although the borderline-ALT estimate was above 1 (OR ≈ 1.83), its uncertainty was fairly large, while the high-ALT estimate was close to 1 (OR ≈ 1.16). Thus, the waist relationship does not appear simply monotonic across the three categories in this adjusted model.
+- Age showed a striking but irregular pattern for ALT. Most age groups had lower estimated odds of borderline/high ALT than the youngest reference age group, with several fairly large negative coefficients. However, the pattern is not a smooth age gradient, and many age-specific estimates have large standard errors. It would therefore be better to describe this as evidence of age-related heterogeneity in ALT classification, rather than concluding that ALT simply decreases with age.
+- Smoking history showed no clear association with ALT category. Estimates for one, two, and three-or-more smoking-history categories were generally imprecise; in particular, the “three or more” group had very large standard errors. There is therefore little reliable evidence of an adjusted smoking–ALT relationship from this model.
+
+:::
+
+Now, we will do the exact same analysis for GGT as well. In my testing, it seems that `glm()` does not work well here, since on top of the $0/1$ problem that was present in ALT modelling, we also have convergence issues. 
+
+```{r}
+# Run MLR; save file as MLR_GGT3.rds
+model_file = here("Feasibility Analysis", "Objects", "MLR_GGT3.rds")
+if (file.exists(model_file)) {
+  fmlr = readRDS(model_file)
+} else {
+  fmlr = multinom(GGT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB,
+                    data = pdat.full, Hess = TRUE)
+  saveRDS(fmlr, model_file)
+}
+
+summary(fmlr)
+```
+
+::: callout-important
+## Key Findings for GGT
+
+- There was little evidence that meeting the exercise recommendation was associated with GGT category. Compared with participants meeting the guideline, those not meeting it had OR ≈ 0.81 for borderline GGT (95% CI ≈ 0.39–1.68) and OR ≈ 1.18 for high GGT (95% CI ≈ 0.74–1.88). Both are compatible with essentially no association.
+- Sex was associated specifically with high GGT. Males had approximately 1.74 times the odds of high rather than normal GGT compared with females (95% CI ≈ 1.10–2.76), after adjustment for the other variables. In contrast, there was no clear male–female difference for borderline GGT (OR ≈ 0.78).
+- Waist-risk category showed a possible but uncertain relationship with high GGT. Participants in the “Substantially increased risk” category had estimated odds of high GGT about 1.66 times those in the reference waist-risk category, but the interval was fairly wide (95% CI ≈ 0.93–2.96). This could be a potential metabolic/adiposity signal worth following up, but the current data do not provide strong evidence for it.
+- Being in the “Not at risk” waist category was not clearly associated with GGT relative to the middle waist-risk category: the estimates were very close to 1 for both borderline and high GGT. Thus, unlike ALT, there was no strong protective-looking association between lower waist risk and high GGT in this adjusted analysis.
+- Age effects for GGT were much less clear than for ALT. Several older age groups had positive coefficients for high GGT, suggesting potentially greater odds of high GGT in older participants, but the standard errors were very large and none of these age contrasts appears particularly precise. The safest conclusion is that the present data do not establish a clear independent age pattern for GGT.
+- Smoking history again showed no clear adjusted association with GGT. Some estimates—for example, the two-category smoking-history group for high GGT—were above 1, but the uncertainty was substantial, while the sparsest smoking category was especially unstable. These results are therefore suggestive at most rather than conclusive.
+
+:::
+
+Thus, while physical activity trends toward a borderline protective effect for ALT, it shows no independent impact on GGT in this cohort. Furthermore, the massive convergence errors seen in the baseline models provide definitive proof that individual sub-group slicing is too sparse. 
+
+------------------------------------------------------------------------
+
+# VII. Visualise the initial results.
+
+We present some mosaic plots and a facet-wrapped bar plot for some simple visualisations. The mosaic plots focus on the interaction between `EXREGUIC` and `ALTRESB`/`GGTRESB`, which we tested in our $\chi^2$ tests, and the facet-wrapped bar plots are meant to visualise the potential confounder imbalance.
+
+```{r}
+# Mosaic plots
+alt_table = table(pdat.full$EXREGUIC, pdat.full$ALTRESB)
+mosaicplot(alt_table, main = "EXREGUIC vs ALTRESB (Mosaic Plot)",
+           xlab = "EXREGUIC", ylab = "ALTRESB", 
+           color = hcl.colors(10, palette = "Blues", rev = TRUE),
+           border = "black", las = 1, cex.axis = 0.7)
+
+ggt_table = table(pdat.full$EXREGUIC, pdat.full$GGTRESB)
+mosaicplot(ggt_table, main = "EXREGUIC vs GGTRESB (Mosaic Plot)",
+           xlab = "EXREGUIC", ylab = "GGTRESB", 
+           color = hcl.colors(12, palette = "Blues", rev = TRUE),
+           border = "black", las = 1, cex.axis = 0.7)
+```
+
+```{r}
+# Facet-Wrapped Bar Plots
+exreg_plot_data = pdat.full %>%
+  select(EXREGUIC, AGEB, SEX, WAIST, DSMKHHRB) %>%
+  pivot_longer(
+    cols = c(AGEB, SEX, WAIST, DSMKHHRB),
+    names_to = "Confounder",
+    values_to = "Category"
+  ) %>%
+  drop_na(EXREGUIC, Category)
+
+ggplot(exreg_plot_data, aes(x = Category, fill = EXREGUIC)) +
+  geom_bar(position = "fill") +
+  facet_wrap(~ Confounder, scales = "free_x", ncol = 2) +
+  labs(
+    title = "Physical Activity Guidelines Across Potential Confounders",
+    x = NULL,
+    y = "Proportion",
+    fill = "Physical Activity"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+
+# Do the same for the ALT3 and GGT3 variables
+alt_plot_data = pdat.full %>%
+  select(ALT3, AGEB, SEX, WAIST, DSMKHHRB) %>%
+  pivot_longer(
+    cols = c(AGEB, SEX, WAIST, DSMKHHRB),
+    names_to = "Confounder",
+    values_to = "Category"
+  ) %>%
+  drop_na(ALT3, Category)
+
+ggplot(alt_plot_data, aes(x = Category, fill = ALT3)) +
+  geom_bar(position = "fill") +
+  facet_wrap(~ Confounder, scales = "free_x", ncol = 2) +
+  labs(
+    title = "ALT Levels Across Potential Confounders",
+    x = NULL,
+    y = "Proportion",
+    fill = "ALT Level"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+
+ggt_plot_data = pdat.full %>%
+  select(GGT3, AGEB, SEX, WAIST, DSMKHHRB) %>%
+  pivot_longer(
+    cols = c(AGEB, SEX, WAIST, DSMKHHRB),
+    names_to = "Confounder",
+    values_to = "Category"
+  ) %>%
+  drop_na(GGT3, Category)
+
+ggplot(ggt_plot_data, aes(x = Category, fill = GGT3)) +
+  geom_bar(position = "fill") +
+  facet_wrap(~ Confounder, scales = "free_x", ncol = 2) +
+  labs(
+    title = "GGT Levels Across Potential Confounders",
+    x = NULL,
+    y = "Proportion",
+    fill = "GGT Level"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+```
+
+------------------------------------------------------------------------
+
+# VIII. Can the research questions be answered with the data?
+
+Overall, question 1b appears *feasible* using the available data, although substantial biomarker missingness and sparse categorical strata mean that careful handling of missing data and robust regression methods will be required for the final analysis. 😀

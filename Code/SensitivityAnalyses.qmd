@@ -1,0 +1,140 @@
+---
+title: "STAT3888: Sensitivity Analysis of DSMKHHRB and MICE"
+author: "Calvin Lai"
+date: today
+format:
+  html:
+    theme: cosmo
+    code-fold: show
+    highlight-style: github
+    embed-resources: true
+---
+
+```{r include = F}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, 
+                      fig.align='center', fig.dim=c(10, 8))
+
+library(tidyverse)
+library(here)
+library(knitr)
+library(nnet)
+library(mice)
+library(stargazer)
+library(broom)
+```
+
+This document will do two things, one being a sensitivity analysis for the number of daily smokers variable `DSMKHHRB`, to see if it is worth analysing it more closely in causal inference terms, and two being an attempt to impute values using MICE and to see whether that can lead to robust analysis as well.
+
+Also, by now I think we will mainly focus on the full population data set, since there is a chance that we may broaden the question anyway, and it makes things a lot cleaner.
+
+# `DSMKHHRB` Sensitivity Analysis
+
+```{r}
+# Load dataset and models
+fdat.full = readRDS(here("Objects", "fdat_full.rds"))
+alt.fmlr = readRDS(here("Objects", "Full_data_MLR_ALT3.rds"))
+ggt.fmlr = readRDS(here("Objects", "Full_data_MLR_GGT3.rds"))
+```
+
+Then, we simply just fit the models without `DSMKHHRB`, and see whether it makes a significant difference or not for MLR, and check convergence, AIC, and deviance.
+
+```{r}
+# Fit models without DSMKHHRB
+alt.fmlr.sub = multinom(formula = ALT3 ~ EXREGUIC + AGEB + SEX + WAIST, 
+                        data = fdat.full, Hess = TRUE)
+ggt.fmlr.sub = multinom(formula = GGT3 ~ EXREGUIC + AGEB + SEX + WAIST, 
+                        data = fdat.full, Hess = TRUE)
+
+# Check convergence like in model diagnostics
+conv = c(alt.fmlr.sub$convergence, ggt.fmlr.sub$convergence)
+conv.log = (conv == 0)
+models = c("ALT Without Smoking", "GGT Without Smoking")
+aic = c(alt.fmlr.sub$AIC, ggt.fmlr.sub$AIC)
+deviance = c(alt.fmlr.sub$deviance, ggt.fmlr.sub$deviance)
+models.df = data.frame("Model" = models, "Convergence" = conv.log,
+                       "AIC" = aic, "Deviance" = deviance)
+kable(models.df, align = "cccc")
+```
+
+It seems fine for now, so let us check if there are any changes to the significance of the coefficients, especially for `EXREGUIC`.
+
+```{r}
+#| results: asis
+# Comparing ALT
+stargazer(alt.fmlr, alt.fmlr.sub, type = "html",
+          title = "DSMKHHRB Sensitivity Analysis for ALT",
+          dep.var.caption = "ALT Level (Baseline: Low)")
+
+# Comparing GGT
+stargazer(ggt.fmlr, ggt.fmlr.sub, type = "html",
+           title = "DSMKHHRB Sensitivity Analysis for ALT",
+           dep.var.caption = "GGT Level (Baseline: Low)")
+```
+
+It does seem to slightly change the significance level for GGT Borderline `EXREGUIC`, although only up to $\alpha=0.1$, so I think it is decently robust without `DSMKHHRB`. In this case, I think we may want to drop it from our models **if we decide that either smoking does not have an association with liver biomarkers (Question 1) or if this particular variable is not a confounder for physical activity either**.
+
+# MICE Imputation
+
+I want to try and do the MICE imputation from lecture, and use that to impute missing data values in our dataset, and see if that can balance out our classes more and essentially mitigate the issue of sparsity we had earlier on; we also will do sensitivity analysis on the ALT and GGT models we had earlier as well.
+
+```{r}
+# Impute using MICE; note we have to remove the ID variables for a safe imputation
+set.seed(102)
+fdat.noid = fdat.full %>% select(-c(ABSLID, ABSPID))
+
+file.path = here("Objects", "fdat_imputed.rds")
+if (file.exists(file.path)) {
+  fdat.imp = readRDS(file.path)
+} else {
+  fdat.imp = mice(fdat.noid, m = 20, maxit = 10, method = "pmm", printFlag = FALSE)
+  saveRDS(fdat.imp, file.path)
+}
+```
+
+Then, we fit the model with the full data, using the specialised `mice` functions. We just take the main variable `EXREGUIC` and its significance for now, since the output is quite a handful so I don't think `stargazer` will work as cleanly here.
+
+```{r}
+# MICE for ALT
+alt.fmlr.mice = with(fdat.imp, 
+                     expr = multinom(formula = ALT3 ~ EXREGUIC + AGEB + 
+                                       SEX + WAIST + DSMKHHRB, , trace = F))
+alt.fmlr.mice.pooled = pool(alt.fmlr.mice)
+df = data.frame(summary(alt.fmlr.mice.pooled))
+alt.exreguic.rows1 = df[c(2, 24), ] %>% 
+  mutate("y.level" = c("Borderline", "High")) %>% 
+  relocate(last_col()) %>% select(-c(term, df))
+alt.exreguic.rows2 = tidy(alt.fmlr)[c(2, 24), ] %>% 
+  select(-c(term))
+alt.rows = rbind(alt.exreguic.rows1, alt.exreguic.rows2) %>% 
+  mutate("Model" = rep(c("MICE", "Original"), each = 2)) %>% 
+  relocate(last_col())
+rownames(alt.rows) = NULL
+kable(alt.rows, caption = "Sensitivity Analysis for MICE on ALT",
+      digits = 4, align = "cccccc", 
+      col.names = c("Model", "ALT Level", "Coefficient", 
+                    "SE", "t-Score", "p-value"))
+```
+
+We do the same for GGT.
+
+```{r}
+# MICE for GGT
+ggt.fmlr.mice = with(fdat.imp, 
+                     expr = multinom(formula = GGT3 ~ EXREGUIC + AGEB + 
+                                       SEX + WAIST + DSMKHHRB, trace = F))
+ggt.fmlr.mice.pooled = pool(ggt.fmlr.mice)
+df = data.frame(summary(ggt.fmlr.mice.pooled))
+ggt.exreguic.rows1 = df[c(2, 24), ] %>% 
+  mutate("y.level" = c("Borderline", "High")) %>% 
+  relocate(last_col()) %>% select(-c(term, df))
+ggt.exreguic.rows2 = tidy(ggt.fmlr)[c(2, 24), ] %>% 
+  select(-c(term))
+ggt.rows = rbind(ggt.exreguic.rows1, ggt.exreguic.rows2) %>% 
+  mutate("Model" = rep(c("MICE", "Original"), each = 2)) %>% 
+  relocate(last_col())
+rownames(ggt.rows) = NULL
+kable(ggt.rows, caption = "Sensitivity Analysis for MICE on GGT",
+      digits = 4, align = "cccccc", 
+      col.names = c("Model", "GGT Level", "Coefficient", 
+                    "SE", "t-Score", "p-value"))
+```

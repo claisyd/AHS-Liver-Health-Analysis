@@ -1,0 +1,308 @@
+---
+title: "STAT3888: Full Population Analysis for Q1B"
+author: "Calvin Lai"
+date: today
+format:
+  html:
+    theme: cosmo
+    code-fold: show
+    highlight-style: github
+    embed-resources: true
+---
+
+```{r include = F}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, 
+                      fig.align='center', fig.dim=c(10, 8))
+
+library(tidyverse)
+library(here)
+library(knitr)
+library(janitor)
+library(naniar)
+library(VIM)
+library(broom)
+library(epitools)
+library(nnet)
+library(patchwork)
+```
+
+Going back to the following problem:
+
+::: callout-important
+## Research Problem
+
+Does meeting physical activity guidelines compared to those who do not, improve liver biomarkers in smokers and medium/high risk alcohol consumers, after accounting for age, sex, waist circumference, and number of daily smokers in the household?
+:::
+
+We would like to see if including the entire adult population (not just smokers or medium/high risk alcohol consumers) can provide us with better analysis. This document will likely be shorter as a lot of the analysis has been done in `FeasibilityAnalysisQ1b` and I don't want to just replicate everything there, as it is quite extensive.
+
+# Full Population Data Set
+
+We will just call the data sets again as usual, and then not filter out the sub-population to get more subject entries after the merge, and also I whill use `WAIST` as the waist circumference, which will combine the female and male waist circumference variables, to reduce the number of `NA` values and redundancy as well.
+
+```{r}
+# Original data sets
+bsp = readRDS(here("Objects", "AHSnhs11bsp.rds"))
+bhh = readRDS(here("Objects", "AHSnhs11bhh.rds"))
+bbi = readRDS(here("Objects", "AHSnhs11bbi.rds"))
+
+# Variable lists
+bbi.vars = c("ABSLID", "ABSPID", "ALTRESB", "GGTRESB")
+bsp.vars = c("ABSLID", "ABSPID", "AL2K7DAY", "SMKAGEDB", "EXREGUIC", "AGEB", "SEX",
+             "PHDWCATM", "PHDWCATF")
+bhh.vars = c("ABSLID", "DSMKHHRB")
+
+# Taking subsets of variables and relevel
+bbir = bbi %>% select(all_of(bbi.vars)) %>% 
+  mutate(ALTRESB = fct_relevel(ALTRESB, levels(bbi$ALTRESB)[9]))
+bspr = bsp %>% select(all_of(bsp.vars)) %>% 
+  mutate(EXREGUIC = fct_relevel(EXREGUIC, levels(bsp$EXREGUIC)[2]),
+         AGEB = fct_relevel(AGEB, levels(bsp$AGEB)[11], after = 1),
+         PHDWCATM = fct_relevel(PHDWCATM, "Not at risk", "Increased risk", 
+                                "Substantially increased risk"),
+         PHDWCATF = fct_relevel(PHDWCATF, "Not at risk", "Increased risk", 
+                                "Substantially increased risk"),
+         WAIST = ifelse(!is.na(PHDWCATM), 
+                            as.character(PHDWCATM), as.character(PHDWCATF)),
+         WAIST = factor(WAIST)) %>% 
+  select(-c(PHDWCATM, PHDWCATF))
+bhhr = bhh %>% select(all_of(bhh.vars)) %>% 
+  mutate(DSMKHHRB = fct_relevel(DSMKHHRB, "None", "One", "Two", "Three or more"))
+
+# Population data (no filtering this time)
+fdat = inner_join(bspr, bbir, by = c("ABSLID", "ABSPID")) %>% distinct()
+fdat.full = inner_join(fdat, bhhr, by = "ABSLID") %>% 
+  filter(!AGEB %in% c("0-4 years", "5-9 years", "10-14 years", "15-17 years")) %>% 
+  mutate(AGEB = fct_drop(AGEB))
+
+noquote(paste("Dimensions of FDAT.FULL:", dim(fdat.full)[1], "x", dim(fdat.full)[2]))
+gg_miss_var(fdat.full)
+gg_miss_upset(fdat.full)
+miss_var_summary(fdat.full)
+```
+
+# $\chi^2$ Tests for Independence
+
+```{r}
+# Test 1; check expected counts, and print output
+test1 = chisq.test(table(fdat.full$EXREGUIC, fdat.full$ALTRESB))
+noquote(paste("Test 1 - Any expected counts < 5:", any(test1$expected < 5)))
+test1
+
+# Test 2
+test2 = chisq.test(table(fdat.full$EXREGUIC, fdat.full$GGTRESB))
+noquote(paste("Test 2 - Any expected counts < 5:", any(test2$expected < 5)))
+test2
+```
+
+We see in the case of the full population, the significance flips; there seems to be statistically significant a relationship between physical activity and both liver biomarkers.
+
+## Odds Ratio and Relative Risk
+
+We will have to use the truncated categories for ALT and GGT for this one; trying to do it with *all* levels of `ALTRESB` and `GGTRESB` causes mathematical instability, and at best we can use the three-category versions.
+
+```{r}
+fdat.full = fdat.full %>%
+  mutate(
+    ALT3 = case_when(
+      SEX == "Male" & ALTRESB %in% c("Less than 10", 
+                                     "10 to less than 15", 
+                                     "15 to less than 20", 
+                                     "20 to less than 25", 
+                                     "25 to less than 30") ~ "Low",
+      SEX == "Male" & ALTRESB %in% c("30 to less than 35", 
+                                     "35 to less than 40") ~ "Borderline",
+      SEX == "Male" & ALTRESB %in% c("40 to less than 45", 
+                                     "45 to less than 50", 
+                                     "More than 50") ~ "High",
+      
+      SEX == "Female" & ALTRESB %in% c("Less than 10", 
+                                     "10 to less than 15", 
+                                     "15 to less than 20", 
+                                     "20 to less than 25") ~ "Low",
+      SEX == "Female" & ALTRESB == "25 to less than 30" ~ "Borderline",
+      SEX == "Female" & ALTRESB %in% c("30 to less than 35", 
+                                     "35 to less than 40",
+                                     "40 to less than 45", 
+                                     "45 to less than 50", 
+                                     "More than 50") ~ "High",
+      TRUE ~ NA
+    ) %>% as.factor(),
+    GGT3 = case_when(
+      SEX == "Male" & GGTRESB %in% c("10 or less", "More than 10 to 15", 
+                                     "More than 15 to 20", 
+                                     "More than 20 to 25", 
+                                     "More than 25 to 30", 
+                                     "More than 30 to 35",
+                                     "More than 35 to 40", 
+                                     "More than 40 to 45") ~ "Low",
+      SEX == "Male" & GGTRESB %in% c("More than 45 to 50", 
+                                     "More than 50 to 55") ~ "Borderline",
+      SEX == "Male" & GGTRESB %in% c("More than 55 to 60", 
+                                     "More than 60") ~ "High",
+      
+      SEX == "Female" & GGTRESB %in% c("10 or less", "More than 10 to 15", 
+                                     "More than 15 to 20", 
+                                     "More than 20 to 25", 
+                                     "More than 25 to 30") ~ "Low",
+      SEX == "Female" & GGTRESB == "More than 30 to 35" ~ "Borderline",
+      SEX == "Female" & GGTRESB %in% c("More than 35 to 40", 
+                                     "More than 40 to 45", 
+                                     "More than 45 to 50",
+                                     "More than 50 to 55",
+                                     "More than 55 to 60", 
+                                     "More than 60") ~ "High",
+      TRUE ~ NA
+    ) %>% as.factor(),
+    EXREGUIC = relevel(EXREGUIC, ref = "Met recommended guidelines")
+  ) %>% 
+  mutate(ALT3 = fct_relevel(ALT3, "Low", "Borderline", "High"),
+         GGT3 = fct_relevel(GGT3, "Low", "Borderline", "High"))
+
+# Odds Ratio and Relative Risk
+mymat = table(fdat.full$EXREGUIC, fdat.full$ALT3)
+
+# Run OR and RR Calculations
+or_model = oddsratio(mymat)
+rr_model = riskratio(mymat)
+
+# Clean and extract only the relevant metrics
+or_stats = or_model$measure[2, ] 
+rr_stats = rr_model$measure[2, ]
+
+# Data frame for output
+OR.RR = data.frame(
+  Metric = c("Odds Ratio (OR)", "Relative Risk (RR)"),
+  Estimate = c(or_stats["estimate"], rr_stats["estimate"]),
+  Lower_CI = c(or_stats["lower"], rr_stats["lower"]),
+  Upper_CI = c(or_stats["upper"], rr_stats["upper"])
+)
+
+OR.RR %>%
+  mutate(across(where(is.numeric), ~ round(., 2))) %>% 
+  kable(
+    caption = "Odds Ratio and Relative Risk of EXREGUIC and ALT Levels",
+    col.names = c("Measure", "Point Estimate", "Lower 95% CI", "Upper 95% CI"),
+    align = "lccc"
+  )
+
+# For GGT as well
+# Odds Ratio and Relative Risk
+mymat = table(fdat.full$EXREGUIC, fdat.full$GGT3)
+
+# Run OR and RR Calculations
+or_model = oddsratio(mymat)
+rr_model = riskratio(mymat)
+
+# Clean and extract only the relevant metrics
+or_stats = or_model$measure[2, ] 
+rr_stats = rr_model$measure[2, ]
+
+# Data frame for output
+OR.RR = data.frame(
+  Metric = c("Odds Ratio (OR)", "Relative Risk (RR)"),
+  Estimate = c(or_stats["estimate"], rr_stats["estimate"]),
+  Lower_CI = c(or_stats["lower"], rr_stats["lower"]),
+  Upper_CI = c(or_stats["upper"], rr_stats["upper"])
+)
+
+OR.RR %>%
+  mutate(across(where(is.numeric), ~ round(., 2))) %>% 
+  kable(
+    caption = "Odds Ratio and Relative Risk of EXREGUIC and GGT Levels",
+    col.names = c("Measure", "Point Estimate", "Lower 95% CI", "Upper 95% CI"),
+    align = "lccc"
+  )
+```
+
+# Controlling for Confounders
+
+This uses the same CMH test as before.
+
+```{r}
+# CMH Test Summary for ALT
+ordered_confounders = c("DSMKHHRB", "WAIST", "AGEB", "SEX")
+cmh_results = list()
+
+# Loop over confounders
+for (i in seq_along(ordered_confounders)) {
+  var_name = ordered_confounders[i]
+  
+  cat("\n===================================\n")
+  cat("CMH Test for:", var_name, "\n")
+  cat("===================================\n")
+  
+  # Generate contingency table over all three variables
+  cmh_table = table(fdat.full$EXREGUIC, fdat.full$ALT3, fdat.full[[var_name]])
+  
+  # Run the test for each confounder
+  test = tryCatch({
+    mantelhaen.test(cmh_table)
+  }, 
+    error = function(e) {NULL}
+  )
+  
+  print(test)
+}
+
+# CMH Test Summary for GGT
+ordered_confounders = c("DSMKHHRB", "WAIST", "AGEB", "SEX")
+cmh_results = list()
+
+# Loop over confounders
+for (i in seq_along(ordered_confounders)) {
+  var_name = ordered_confounders[i]
+  
+  cat("\n===================================\n")
+  cat("CMH Test for:", var_name, "\n")
+  cat("===================================\n")
+  
+  # Generate contingency table over all three variables
+  cmh_table = table(fdat.full$EXREGUIC, fdat.full$GGT3, fdat.full[[var_name]])
+  
+  # Run the test for each confounder
+  test = tryCatch({
+    mantelhaen.test(cmh_table)
+  }, 
+    error = function(e) {NULL}
+  )
+  
+  print(test)
+}
+```
+
+Some of the significances change around from the sub-population, so this could be something we can look into later on.
+
+# Logistic Regression
+
+This will be the last part for now, I don't think I will do the imputation analysis for the full data set. We still need to use the multinomial logistic regression in this case, not due to mathematical instability but because we are using more than three categories. As mentioned in the other file, we use `nnet`'s implementation, which while it uses the MLE instead of Firth's penalised regression, it is much faster than `brglm2`'s implementation, and since we are using it in the other data set, we should keep using it for consistency.
+
+```{r}
+# ALT
+model_file = here("Objects", "Full_data_MLR_ALT3.rds")
+if (file.exists(model_file)) {
+  full.mlr.alt = readRDS(model_file)
+} else {
+  full.mlr.alt = multinom(ALT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB,
+                        data = fdat.full, Hess = TRUE)
+  saveRDS(full.mlr.alt, model_file)
+}
+summary(full.mlr.alt)
+
+# GGT
+model_file = here("Objects", "Full_data_MLR_GGT3.rds")
+if (file.exists(model_file)) {
+  full.mlr.ggt = readRDS(model_file)
+} else {
+  full.mlr.ggt = multinom(GGT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB,
+                        data = fdat.full, Hess = TRUE)
+  saveRDS(full.mlr.ggt, model_file)
+}
+summary(full.mlr.ggt)
+```
+
+I will leave the actual analysis for later; this shorter document is just meant to see what would happen if we did use the entire data set and whether it is really worth doing or not.
+
+# Next Step
+
+I think the next step for our analysis would likely be to use the full adult data set, but use an indicator $H$ for being in the sub-population of interest, and then use logistic regression with an interaction model (`EXREGUIC * H`) in order to measure e.g., how much the physical-activity effect changes when we move from the broader population into the smoker + medium/high-alcohol subgroup.

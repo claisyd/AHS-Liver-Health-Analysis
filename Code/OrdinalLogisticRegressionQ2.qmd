@@ -1,0 +1,200 @@
+---
+title: "STAT3888: Ordinal Logistic Regression"
+author: "Calvin Lai"
+date: today
+format:
+  html:
+    theme: cosmo
+    code-fold: show
+    highlight-style: github
+    embed-resources: true
+---
+
+In this document, we will try to use ordinal logistic regression instead of our previous multinomial logistic regression model, as `ALT3` and `GGT3` both have clear orders in their categories (Low < Borderline < High). 
+
+```{r include = F}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, 
+                      fig.align='center', fig.dim=c(10, 8))
+
+library(tidyverse)
+library(here)
+library(knitr)
+library(ordinal)
+library(MASS)
+library(performance)
+library(brant)
+library(car)
+library(VGAM)
+```
+
+```{r}
+# Initialise data
+pdat.full = readRDS(here("Objects", "pdat_full.rds"))
+fdat.full = readRDS(here("Objects", "fdat_full.rds"))
+
+# Order ALT3 and GGT3
+pdat.full = pdat.full %>% 
+  mutate(ALT3 = factor(ALT3, c("Low", "Borderline", "High"), ordered = TRUE),
+         GGT3 = factor(GGT3, c("Low", "Borderline", "High"), ordered = TRUE))
+
+fdat.full = fdat.full %>% 
+  mutate(ALT3 = factor(ALT3, c("Low", "Borderline", "High"), ordered = TRUE),
+         GGT3 = factor(GGT3, c("Low", "Borderline", "High"), ordered = TRUE))
+```
+
+# Model Fitting
+
+We will use the `ordinal::clm()` function to fit the models, and then using `ordinal::nominal_test()` for the POA hypothesis test. We can also use the `MASS::polr()` function to see whether there are differences or not. 
+
+```{r}
+# Fitting ALT and GGT model under PDAT
+alt.olr = clm(ALT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, data = pdat.full)
+ggt.olr = clm(GGT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, data = pdat.full)
+
+alt.olr
+ggt.olr
+```
+
+```{r}
+# MASS implementation for ALT and GGT under PDAT
+alt.polr = polr(ALT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, data = pdat.full)
+ggt.polr = polr(GGT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, data = pdat.full)
+
+alt.polr
+ggt.polr
+```
+
+Using `clm()`, we obtain the following warning: "(1) Hessian is numerically singular: parameters are not uniquely determined; In addition: Absolute convergence criterion was met, but relative criterion was not met". Using `polr()`, we obtain the following warning: "design appears to be rank-deficient, so dropping some coefs". It seems that these models may not be very stable at least under PDAT, so let us try using FDAT.
+
+```{r}
+# clm Models using FDAT
+alt.folr = clm(ALT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, data = fdat.full)
+ggt.folr = clm(GGT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, data = fdat.full)
+
+alt.folr
+ggt.folr
+
+# polr Models using FDAT
+alt.fpolr = polr(ALT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, 
+                 data = fdat.full, Hess = TRUE)
+ggt.fpolr = polr(GGT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, 
+                 data = fdat.full, Hess = TRUE)
+
+summary(alt.fpolr)
+summary(ggt.fpolr)
+```
+
+It seems a lot more stable here, since there are no warnings this time around. In fact, we can do `summary()` on the `polr` objects, where the previous case we couldn't for some reason, likely due to problems with the Hessian. 
+
+Thus, the bottom line is that we may consider these models, but ONLY using `fdat.full`, as I don't think the model is meaningful if it is unstable or doesn't converge.
+
+# Assumptions Checking
+
+The key assumptions of Ordinal Logistic Regression are:
+
+1. Ordinal dependent variable
+2. Independent variable types
+3. Independence of assumptions
+4. No multicollinearity
+5. Proportional odds assumption (POA)
+
+## Assumptions I-III
+
+The first assumption is satisfied based on how we defined `ALT3` and `GGT3` (and by extension `ALTRESB` and `GGTRESB`), and we have made that explicitly clear by mutating our data sets. The second and third assumptions are also held according to the NHS data set and variables we used.
+
+## Assumption IV
+
+The fourth assumption can be checked using the VIF (variance inflation factor); we check if these values are less than 5 or 10. We use the `performance::check_collinearity()` function for the `clm` models, and `car::vif` for the `polr` models.
+
+```{r}
+# VIF Computation for models using full data set
+check_collinearity(alt.folr)
+check_collinearity(ggt.folr)
+vif(alt.fpolr)
+vif(ggt.fpolr)
+```
+
+In this case, we may want to keep all the models for now.
+
+## Assumption V
+
+We will use the `brant` package for the Brant test for our `polr` models, and `nominal_test` for our `clm` models.
+
+```{r}
+# Brant test for polr models
+brant(alt.fpolr)
+brant(ggt.fpolr)
+
+# Nominal test for clm models
+nominal_test(alt.folr)
+nominal_test(ggt.folr)
+```
+
+For the Brant tests, we got the warning: "1351 combinations in table(dv,ivs) do not occur. Because of that, the test results might be invalid.". So, I'm not sure if i can really do much inference from that.
+
+Additionally, since we want the $p$-values $\text{Pr}(>\text{Chi})$ to not be significant for our nominal tests, it seems that the `clm` models do not satisfy this assumption either.
+
+# Takeaway
+
+Our ordinal logistic regression models violate the POA, which tells us that **the risks for these health markers do not change uniformly as we move from Low $\to$ Borderline $\to$ High.**
+
+- In both our ALT and GGT models, the variable `SEX` rejected the proportional odds assumption. It shows that being male or female impacts the shift from Low to Borderline completely differently than it impacts the shift from Borderline to High. A single, global slope coefficient for `SEX` would mask this reality.
+- The proportional-odds assumption is not supported for all predictors, indicating that some covariates have different associations at different severity thresholds. Consequently, a multinomial model may be preferable for the primary analysis because it allows category-specific effects without imposing proportional odds.
+- The broken Brant test math confirmed that certain age brackets combined with specific outcome categories have near-zero occurrences. This can tell us about how our demographics are and in general the natural clusterings. Overall, it also suggests collapsing `AGEB` even more at some point as well.
+
+# Continuation Ratio Models
+
+These are ordinal logistic regression models specifically designed for cases when proportional odds are not satisfied. We relax the requirement that the coefficients must stay the same and instead have two pairs of coefficients, one for Low $\to$ Borderline or High, and the other for Borderline $\to$ High; this allows us to utilise the ordinal nature of our variables while not being completely restricted by POA. The implementation here is from `VGAM::vgam()`.
+
+```{r}
+# Fitting CRM models on full data set
+alt.crm = vgam(ALT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, 
+               family = cratio(parallel = FALSE), data = fdat.full)
+summary(alt.crm)
+OR.alt = exp(coef(alt.crm))
+OR.alt.CI = exp(confintvglm(alt.crm))
+
+ggt.crm = vgam(GGT3 ~ EXREGUIC + AGEB + SEX + WAIST + DSMKHHRB, 
+               family = cratio(parallel = FALSE), data = fdat.full)
+summary(ggt.crm)
+OR.ggt = exp(coef(ggt.crm))
+OR.ggt.CI = exp(confintvglm(ggt.crm))
+```
+
+```{r}
+# Table for OR.alt
+or_df = data.frame(RawName = names(OR.alt), OR = as.numeric(OR.alt),
+                   LowerCI = OR.alt.CI[, 1], UpperCI = OR.alt.CI[, 2],
+                   stringsAsFactors = FALSE)
+or_df = or_df[!grepl("(Intercept)", or_df$RawName), ]
+or_df$Variable = str_remove(or_df$RawName, ":[12]$")
+or_df$Step = ifelse(str_detect(or_df$RawName, ":1$"), 
+                     "Step 1: Low vs Borderline/High", 
+                     "Step 2: Borderline vs High")
+final_table = or_df[, c("Variable", "Step", "OR", "LowerCI", "UpperCI")]
+final_table[, c("OR", "LowerCI", "UpperCI")] = 
+  round(final_table[, c("OR", "LowerCI", "UpperCI")], 3)
+rownames(final_table) = NULL
+kable(final_table, caption = "CRM Model Odds Ratio for ALT", 
+      align = "llccc", 
+      col.names = c("Variable", "Step", "OR", "Lower 95% CI", "Upper 95% CI"))
+
+# Table for OR.ggt
+or_df2 = data.frame(RawName = names(OR.alt), OR = as.numeric(OR.ggt),
+                    LowerCI = OR.alt.CI[, 1], UpperCI = OR.alt.CI[, 2],
+                    stringsAsFactors = FALSE)
+or_df2 = or_df2[!grepl("(Intercept)", or_df$RawName), ]
+or_df2$Variable = str_remove(or_df2$RawName, ":[12]$")
+or_df2$Step = ifelse(str_detect(or_df2$RawName, ":1$"), 
+                     "Step 1: Low vs Borderline/High", 
+                     "Step 2: Borderline vs High")
+final_table2 = or_df2[, c("Variable", "Step", "OR", "LowerCI", "UpperCI")]
+final_table2[, c("OR", "LowerCI", "UpperCI")] = 
+  round(final_table2[, c("OR", "LowerCI", "UpperCI")], 3)
+rownames(final_table2) = NULL
+kable(final_table2, caption = "CRM Model Odds Ratio for GGT", 
+      align = "llccc",
+      col.names = c("Variable", "Step", "OR", "Lower 95% CI", "Upper 95% CI"))
+```
+
+Not quite sure why some of the point estimates lie outside the confidence intervals here; it could be some bug in my code. I may fix it at some point but as it stands, we will probably just stick with Multinomial Logistic Regression anyway so it does not really matter. Another model that we can look into at some point is the Partial Proportional Odd Model, which also relaxes the POA. This is implemented in `VGAM::vglm/vgam` with `family=cumulative(parallel = FALSE ~ x1)`. But if we are not very desperate for getting ordinal logistic regression to work I don't think we need to worry about this too much.

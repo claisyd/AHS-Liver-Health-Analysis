@@ -1,0 +1,223 @@
+---
+title: "STAT3888: Causal Inference Analysis"
+author: "Calvin Lai"
+date: today
+format:
+  html:
+    theme: cosmo
+    code-fold: show
+    highlight-style: github
+    embed-resources: true
+---
+
+```{r include = F}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, 
+                      fig.align='center', fig.dim=c(10, 8))
+
+library(tidyverse)
+library(here)
+library(knitr)
+library(dagitty)
+library(ggdag)
+library(marginaleffects)
+library(effects)
+library(ggeffects)
+library(WeightIt)
+library(cobalt)
+```
+
+In this document, we will aim to perform some causal inference on our current models, which involves a closer analysis of the variable relationships. In particular, we can assume that `WAIST` is a *confounder* rather than a mediator, so we will likely keep our main models. As this has been confirmed now, I believe we can leave the models as is.
+
+The causal role of `DSMKHHRB` is less certain. Household smoking may plausibly influence liver biomarkers through passive smoke exposure and may also proxy broader household or socioeconomic conditions. However, its direct relationship with meeting physical-activity guidelines is uncertain. We therefore retain it in the primary DAG/model, consistent with the original research question, and evaluate the robustness of the estimated exercise effect in a sensitivity analysis excluding `DSMKHHRB.`
+
+# Directed Acyclic Graph (DAG) of Our Variables
+
+```{r}
+# DAG Plot
+exercise_dag2 = dagitty("
+dag {
+  EXREGUIC -> ALTGGT
+
+  AGEB -> EXREGUIC
+  AGEB -> ALTGGT
+
+  SEX -> EXREGUIC
+  SEX -> ALTGGT
+
+  WAIST -> EXREGUIC
+  WAIST -> ALTGGT
+
+  DSMKHHRB -> EXREGUIC
+  DSMKHHRB -> ALTGGT
+}
+")
+
+ggdag(exercise_dag2, text_size = 2) +
+  theme_dag()
+
+adjustmentSets(
+  exercise_dag2,
+  exposure = "EXREGUIC",
+  outcome = "ALTGGT"
+)
+```
+
+The adjustment set is given by $\{ \texttt{AGEB}, \texttt{DSMKHHRB}, \texttt{SEX}, \texttt{WAIST} \}$. This is the set of covariates to include in the model, which is what we had initially as well. On this note, I don't think doing sensitivity analysis where (with and without `WAIST`) is necessary.
+
+# Marginal Effects
+
+Before we check marginal effects and overall effect plots as well, we will load the data sets and our models.
+
+```{r}
+# Load data sets
+pdat.full = readRDS(here("Objects", "pdat_full.rds"))
+fdat.full = readRDS(here("Objects", "fdat_full.rds"))
+
+# Load models
+alt.mlr = readRDS(here("Objects", "MLR_ALT3.rds"))
+ggt.mlr = readRDS(here("Objects", "MLR_GGT3.rds"))
+alt.fmlr = readRDS(here("Objects", "Full_data_MLR_ALT3.rds"))
+ggt.fmlr = readRDS(here("Objects", "Full_data_MLR_GGT3.rds"))
+```
+
+Then, we use the `effects` package to make effects plots for the models in the full population (since it may be possible that Q2 will focus on the unrestricted population `fdat.full`).
+
+```{r}
+# Effects
+eff.alt = effect("EXREGUIC", alt.fmlr)
+plot(eff.alt, multiline = TRUE, main = "Effect Plot of EXREGUIC on ALT")
+
+eff.ggt = effect("EXREGUIC", ggt.fmlr)
+plot(eff.ggt, multiline = TRUE, main = "Effect Plot of EXREGUIC on GGT")
+```
+
+Next, we find the marginal effects using `marginaleffects::slopes()` which are a better interpretation than our log odds.
+
+```{r}
+# Slopes
+plot_slopes(alt.fmlr, variables = "EXREGUIC", by = "ALT3") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  theme_linedraw() + labs(title = "Effect of EXREGUIC on ALT")
+
+plot_slopes(ggt.fmlr, variables = "EXREGUIC", by = "GGT3") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  theme_linedraw() + labs(title = "Effect of EXREGUIC on GGT")
+
+# Average Comparisons
+alt.comp = avg_comparisons(alt.fmlr, variables = "EXREGUIC", type = "probs")
+alt.comp %>% tidy() %>% select(-c(contrast)) %>% 
+  kable(caption = "Average Comparisons of ALT Using MLR (Contrast = Did Not Meet ~ Met)", 
+        digits = 3, col.names = c("Term", "Group", "Estimate", "SE", "Statistic",
+                      "p-value", "s-value", "CI LB", "CI UB"))
+
+ggt.comp = avg_comparisons(ggt.fmlr, variables = "EXREGUIC", type = "probs")
+ggt.comp%>% tidy() %>% select(-c(contrast)) %>% 
+  kable(caption = "Average Comparisons of GGT Using MLR (Contrast = Did Not Meet ~ Met)", 
+        digits = 3, col.names = c("Term", "Group", "Estimate", "SE", "Statistic",
+                      "p-value", "s-value", "CI LB", "CI UB"))
+```
+
+The model-based probability plots indicate a generally favourable shift in liver biomarker categories among participants meeting the physical-activity guidelines. For both ALT and GGT, meeting the guideline is associated with a higher predicted probability of the Low category and a lower predicted probability of the High category, with the difference appearing more pronounced for GGT. These plots provide a more intuitive representation of the association than the underlying multinomial log-odds coefficients.
+
+The average comparisons basically answer "On average, how much does the predicted probability of each ALT/GGT category change between meeting and not meeting the guideline?". In this case, for ALT meeting physical activity guidelines is associated with a 1.442% higher probability of Low ALT, and 2.164% lower probability of High ALT. However, only High ALT results are significant here so our inference must be a bit more careful...
+
+# Propensity Scores
+
+We can use `WeightIt` for propensity scoring, and select the GLM option for now; we may make a more extensive analysis later on if this is worth pursuing. 
+
+Balance tables and Love plots are diagnostic tools used in statistics and causal inference to evaluate whether confounding covariates are balanced between treatment and control groups after methods like propensity score matching or weighting.
+
+## ALT
+
+```{r}
+# Formula for ALT; use full population (and complete cases only)
+fm.alt = EXREGUIC ~ AGEB + SEX + WAIST + DSMKHHRB
+fdat.comp = fdat.full %>% drop_na()
+
+# WeightIt
+wmultinom.alt = weightit(fm.alt, fdat.comp, method = "glm", estimand = "ATE")
+set.cobalt.options(binary = "std")
+
+# Check SMD; generally < 0.1 is considered well-balanced. Also balance plots.
+bal.tab(wmultinom.alt, thresholds = c(m = .1))
+love.plot(wmultinom.alt)
+
+# Overlap/distributional balance for each variables
+bal.plot(wmultinom.alt, var.name = "AGEB", which = "both", type = "density")
+bal.plot(wmultinom.alt, var.name = "SEX", which = "both", type = "density")
+bal.plot(wmultinom.alt, var.name = "WAIST", which = "both", type = "density")
+bal.plot(wmultinom.alt, var.name = "DSMKHHRB", which = "both", type = "density")
+
+# Extreme weights; high values suggest we should try to trim weights
+summary(wmultinom.alt)
+trimmed.wmultinom.alt = trim(wmultinom.alt, at = .99)
+summary(trimmed.wmultinom.alt)
+```
+
+## GGT
+
+```{r}
+# Formula for GGT; use full population (and complete cases only)
+fm.ggt = EXREGUIC ~ AGEB + SEX + WAIST + DSMKHHRB
+fdat.comp = fdat.full %>% drop_na()
+
+# WeightIt
+wmultinom.ggt = weightit(fm.ggt, fdat.comp, method = "glm", estimand = "ATE")
+set.cobalt.options(binary = "std")
+
+# Check SMD; generally < 0.1 is considered well-balanced. Also balance plots.
+bal.tab(wmultinom.ggt, thresholds = c(m = .1))
+love.plot(wmultinom.ggt)
+
+# Overlap/distributional balance for each variables
+bal.plot(wmultinom.ggt, var.name = "AGEB", which = "both", type = "density")
+bal.plot(wmultinom.ggt, var.name = "SEX", which = "both", type = "density")
+bal.plot(wmultinom.ggt, var.name = "WAIST", which = "both", type = "density")
+bal.plot(wmultinom.ggt, var.name = "DSMKHHRB", which = "both", type = "density")
+
+# Extreme weights
+summary(wmultinom.ggt)
+trimmed.wmultinom.ggt = trim(wmultinom.ggt, at = 0.99)
+summary(trimmed.wmultinom.ggt)
+```
+
+The Love plot compares covariate imbalance before and after propensity-score weighting. Successful weighting should move the adjusted standardized mean differences towards zero, with values below 0.1 generally indicating acceptable balance. Improved balance suggests that participants who met and did not meet physical-activity guidelines are more comparable with respect to the measured confounders, reducing their potential to explain the observed exercise–ALT/GGT association.
+
+Extreme inverse-probability weights indicate participants whose observed physical-activity status was very unlikely given their measured covariates. Such weights may reflect limited overlap between exercise groups and can substantially increase variance by allowing a small number of observations to dominate the analysis. We therefore inspect the weight distribution and effective sample size before estimating the weighted effect.
+
+Also, since our trimming changed the summary substantially, this may be an indication of poor overlap.
+
+# Estimated Outcome Effects
+
+We attach the weights we found earlier to the model, and estimate the effects.
+
+```{r}
+# ALT
+alt.fmlr.weighted = multinom_weightit(
+  ALT3 ~ EXREGUIC,
+  data = fdat.comp, 
+  weightit = wmultinom.alt
+)
+avg_comparisons(alt.fmlr.weighted,
+                variables = "EXREGUIC",
+                type = "probs"
+) %>% tidy() %>% select(-c(contrast)) %>% 
+  kable(caption = "Average Comparisons of ALT Using PSW (Contrast = Did Not Meet ~ Met)", 
+        digits = 3, col.names = c("Term", "Group", "Estimate", "SE", "Statistic",
+                      "p-value", "s-value", "CI LB", "CI UB"))
+
+# GGT
+ggt.fmlr.weighted = multinom_weightit(
+  GGT3 ~ EXREGUIC,
+  data = fdat.comp, 
+  weightit = wmultinom.ggt
+)
+avg_comparisons(ggt.fmlr.weighted,
+                variables = "EXREGUIC",
+                type = "probs") %>% tidy() %>% select(-c(contrast)) %>% 
+  kable(caption = "Average Comparisons of GGT Using PSW (Contrast = Did Not Meet ~ Met)", 
+        digits = 3, col.names = c("Term", "Group", "Estimate", "SE", "Statistic",
+                      "p-value", "s-value", "CI LB", "CI UB"))
+```
+
+We use the same interpretation as before.

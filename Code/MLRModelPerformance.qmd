@@ -1,0 +1,112 @@
+---
+title: "STAT3888: New Model Performance Metrics"
+author: "Calvin Lai"
+date: today
+format:
+  html:
+    theme: cosmo
+    code-fold: show
+    highlight-style: github
+    embed-resources: true
+---
+
+Using the new dataset, I want to try and just do cross-validation for the metrics such as log loss, AUC, and balanced accuracy for the main model, since I have already done that for the `ALT2`/`GGT2` models.
+
+# Load Data and Prepare Functions
+
+```{r warning = F, message = F}
+# Initial setup
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, 
+                      fig.align='center', fig.dim=c(10, 8))
+
+# General 
+library(tidyverse)
+library(here)
+library(knitr)
+library(kableExtra)
+
+# Modelling and CV
+library(nnet)
+library(caret)
+library(pROC)
+
+# Data
+dat.full = readRDS(here("Objects", "dat_full.rds"))
+
+# Helper function for metrics
+metrics_summary = function(data, lev = NULL, model = NULL) {
+  
+  metrics = multiClassSummary(
+    data = data,
+    lev = lev,
+    model = model
+  )
+  
+  c(
+    AUC = unname(metrics["AUC"]),
+    LogLoss = unname(metrics["logLoss"]),
+    BalancedAccuracy = unname(metrics["Mean_Balanced_Accuracy"])
+  )
+}
+
+# Helper function for getting the final metrics
+get_best_metrics = function(model) {
+  
+  best = model$results[
+    model$results$decay == model$bestTune$decay,
+    c("AUC", "LogLoss", "BalancedAccuracy"),
+    drop = FALSE
+  ]
+  
+  return(best)
+}
+
+# Create folds for reuse later
+set.seed(2992)
+ALT.folds = createFolds(dat.full$ALT3, k = 10, returnTrain = TRUE)
+GGT.folds = createFolds(dat.full$GGT3, k = 10, returnTrain = TRUE)
+
+# CV Settings
+ALT.cv_control = trainControl(method = "cv", index = ALT.folds,
+                          summaryFunction = metrics_summary,
+                          classProbs = TRUE)
+GGT.cv_control = trainControl(method = "cv", index = GGT.folds,
+                          summaryFunction = metrics_summary,
+                          classProbs = TRUE)
+```
+
+Now, we do the cross-validated fitting, and take metrics.
+
+```{r}
+# Fit MLR Models
+ALT.mlr.cv = train(ALT3 ~ ExerciseGuidelines + Sex + AlcoholRisk + 
+                     SmokingDuration + NonSchoolQuals + IncomeDecile + Age + Waist,
+                   data = dat.full, method = "multinom", 
+                   trControl = ALT.cv_control, metric = "LogLoss", maximize = FALSE,
+                   trace = FALSE)
+GGT.mlr.cv = train(GGT3 ~ ExerciseGuidelines + Sex + AlcoholRisk + 
+                     SmokingDuration + NonSchoolQuals + IncomeDecile + Age + Waist,
+                   data = dat.full, method = "multinom", 
+                   trControl = GGT.cv_control, metric = "LogLoss", maximize = FALSE,
+                   trace = FALSE)
+
+# Get metrics for later
+ALT.mlr.metrics = get_best_metrics(ALT.mlr.cv)
+GGT.mlr.metrics = get_best_metrics(GGT.mlr.cv)
+
+mlr.metrics.table = bind_rows(
+  ALT = ALT.mlr.metrics,
+  GGT = GGT.mlr.metrics,
+  .id = "Model"
+)
+
+kable(
+  mlr.metrics.table,
+  digits = 3,
+  caption = "Cross-Validated Performance of Multinomial Logistic Regression Models",
+  align = "cccc"
+)
+```
+
+So the models are not particularly much better than the `ALT2`/`GGT2` models. The balanced accuracy still hovers around the $0.5$ mark and AUC and LogLoss are comparable to the logistic regression and GAM models.
+
